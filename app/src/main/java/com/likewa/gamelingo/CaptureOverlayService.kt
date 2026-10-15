@@ -27,6 +27,10 @@ import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 class CaptureOverlayService : Service() {
@@ -117,7 +121,7 @@ class CaptureOverlayService : Service() {
         val padded = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888)
         padded.copyPixelsFromBuffer(buffer); image.close()
         val bitmap = Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight); padded.recycle()
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val recognizer = createRecognizer()
         recognizer.process(InputImage.fromBitmap(bitmap, 0)).addOnSuccessListener { result ->
             val raw = result.text.trim()
             if (raw.isBlank()) {
@@ -134,6 +138,16 @@ class CaptureOverlayService : Service() {
             showResult("อ่านตัวหนังสือไม่สำเร็จ"); processing = false; bitmap.recycle(); recognizer.close()
         }
     }
+
+    // Each script needs its own ML Kit recognizer; Latin is the default.
+    private fun createRecognizer(): TextRecognizer = TextRecognition.getClient(
+        when (source) {
+            "ja" -> JapaneseTextRecognizerOptions.Builder().build()
+            "zh" -> ChineseTextRecognizerOptions.Builder().build()
+            "ko" -> KoreanTextRecognizerOptions.Builder().build()
+            else -> TextRecognizerOptions.DEFAULT_OPTIONS
+        }
+    )
 
     private fun showResult(text: String) {
         handler.post { resultView?.text = text; Toast.makeText(this, "แปลเสร็จแล้ว", Toast.LENGTH_SHORT).show() }
