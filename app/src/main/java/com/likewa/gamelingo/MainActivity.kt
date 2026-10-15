@@ -1,6 +1,8 @@
 package com.likewa.gamelingo
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -59,12 +61,16 @@ class MainActivity : AppCompatActivity() {
         setContentView(ScrollView(this).apply { addView(layout) })
     }
 
-    // Shows the error saved by GameLingoApp if the app crashed last time, so it can be copied and reported.
+    // Shows why the app closed last time, so it can be copied and reported: the Java stack trace saved by
+    // GameLingoApp, or, for native crashes and system kills that bypass it, Android's exit record (API 30+).
     private fun showLastCrash(layout: LinearLayout, pad: Int) {
+        val parts = mutableListOf<String>()
         val file = GameLingoApp.crashFile(application)
-        if (!file.exists()) return
-        val report = file.readText()
-        file.delete()
+        if (file.exists()) { parts += file.readText(); file.delete() }
+        lastAbnormalExit()?.let { parts += it }
+        if (parts.isEmpty()) return
+        val report = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}\n\n" +
+            parts.joinToString("\n\n")
         layout.addView(TextView(this).apply {
             text = "\nครั้งก่อนแอปปิดตัวเพราะข้อผิดพลาดนี้:"; textSize = 15f; setTextColor(0xFFD32F2F.toInt())
         })
@@ -78,6 +84,32 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "คัดลอกแล้ว", Toast.LENGTH_SHORT).show()
             }
         })
+    }
+
+    private fun lastAbnormalExit(): String? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val bad = setOf(ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE, ApplicationExitInfo.REASON_ANR,
+            ApplicationExitInfo.REASON_SIGNALED, ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE, ApplicationExitInfo.REASON_DEPENDENCY_DIED)
+        // Look past later normal exits (e.g. reinstalling the app) to the most recent crash
+        val info = (getSystemService(ACTIVITY_SERVICE) as ActivityManager)
+            .getHistoricalProcessExitReasons(packageName, 0, 10).firstOrNull { it.reason in bad } ?: return null
+        // Each exit is reported once
+        val prefs = getSharedPreferences("diagnostics", MODE_PRIVATE)
+        if (prefs.getLong("reportedExit", 0L) == info.timestamp) return null
+        prefs.edit().putLong("reportedExit", info.timestamp).apply()
+        val reason = when (info.reason) {
+            ApplicationExitInfo.REASON_CRASH -> "CRASH"
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+            ApplicationExitInfo.REASON_ANR -> "ANR"
+            ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+            ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+            else -> "OTHER (${info.reason})"
+        }
+        val time = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(info.timestamp))
+        return "Exit: $reason, status ${info.status}, $time\n${info.description ?: ""}"
     }
 
     private fun beginCaptureFlow() {
