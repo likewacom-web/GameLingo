@@ -40,7 +40,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 15f; setPadding(0, pad / 2, 0, pad)
         })
         sourceSpinner = Spinner(this)
-        sourceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, languages.map { "\${it.first} (\${it.second})" })
+        sourceSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, languages.map { "${it.first} (${it.second})" })
         layout.addView(TextView(this).apply { text = "ภาษาต้นทาง" })
         layout.addView(sourceSpinner)
         targetSpinner = Spinner(this)
@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun beginCaptureFlow() {
         if (!Settings.canDrawOverlays(this)) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:\$packageName")))
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             Toast.makeText(this, "อนุญาตให้ GameLingo แสดงทับแอปอื่น แล้วกลับมากดเริ่มอีกครั้ง", Toast.LENGTH_LONG).show()
             return
         }
