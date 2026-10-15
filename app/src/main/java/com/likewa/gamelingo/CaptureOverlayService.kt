@@ -346,24 +346,26 @@ class CaptureOverlayService : Service() {
         }
     }
 
-    // Paints the translation over the original text in the same spot and background colour, with a
-    // contrasting text colour. The font follows the original line's height (never below a readable
-    // minimum), and the label grows sideways if the translation is longer, rather than shrinking it.
+    // Paints the translation over the original text in the same box and background colour, with a
+    // contrasting text colour. The font starts at the original line's height and shrinks until the
+    // translation fits, so labels never spill over neighbouring text. Longer translations may use up to
+    // 30% more width when there is room on screen.
     private fun addLabel(block: TextBlock, text: String) {
         val layer = translationLayer ?: return
         val box = block.box
         val pad = (2 * resources.displayMetrics.density).toInt()
-        val minTextPx = 12 * resources.displayMetrics.scaledDensity
         val light = ColorUtils.calculateLuminance(block.background) > 0.5
+        val width = minOf((box.width() * 1.3f).toInt(), screenWidth - box.left) + pad * 2
+        val height = box.height() + pad
+        val maxPx = maxOf(8, (box.height() * 0.95f).toInt())
+        val minPx = minOf(maxPx, (7 * resources.displayMetrics.density).toInt())
         val label = TextView(this).apply {
             this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
             setBackgroundColor(block.background); setPadding(pad, 0, pad, 0)
             gravity = Gravity.CENTER_VERTICAL; maxLines = 1; includeFontPadding = false
-            setTextSize(TypedValue.COMPLEX_UNIT_PX, maxOf(minTextPx, box.height() * 0.8f))
-            minWidth = box.width() + pad * 2
-            minHeight = box.height() + pad
+            setAutoSizeTextTypeUniformWithConfiguration(minPx, maxPx, 1, TypedValue.COMPLEX_UNIT_PX)
         }
-        layer.addView(label, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+        layer.addView(label, FrameLayout.LayoutParams(width, height).apply {
             leftMargin = box.left - pad; topMargin = box.top - pad / 2
         })
     }
