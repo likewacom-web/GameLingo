@@ -1,6 +1,8 @@
 package com.likewa.gamelingo
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
@@ -10,6 +12,7 @@ import android.provider.Settings
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -52,7 +55,29 @@ class MainActivity : AppCompatActivity() {
             text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อแปล"
             textSize = 14f
         })
-        setContentView(layout)
+        showLastCrash(layout, pad)
+        setContentView(ScrollView(this).apply { addView(layout) })
+    }
+
+    // Shows the error saved by GameLingoApp if the app crashed last time, so it can be copied and reported.
+    private fun showLastCrash(layout: LinearLayout, pad: Int) {
+        val file = GameLingoApp.crashFile(application)
+        if (!file.exists()) return
+        val report = file.readText()
+        file.delete()
+        layout.addView(TextView(this).apply {
+            text = "\nครั้งก่อนแอปปิดตัวเพราะข้อผิดพลาดนี้:"; textSize = 15f; setTextColor(0xFFD32F2F.toInt())
+        })
+        layout.addView(TextView(this).apply {
+            text = report; textSize = 11f; setTextIsSelectable(true); setPadding(0, pad / 2, 0, pad / 2)
+        })
+        layout.addView(Button(this).apply {
+            text = "คัดลอกข้อผิดพลาด"
+            setOnClickListener {
+                (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("GameLingo crash", report))
+                Toast.makeText(this@MainActivity, "คัดลอกแล้ว", Toast.LENGTH_SHORT).show()
+            }
+        })
     }
 
     private fun beginCaptureFlow() {
