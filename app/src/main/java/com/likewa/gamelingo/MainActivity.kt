@@ -53,8 +53,15 @@ class MainActivity : AppCompatActivity() {
         layout.addView(TextView(this).apply { text = "แปลเป็น" })
         layout.addView(targetSpinner)
         layout.addView(Button(this).apply { text = "เริ่มใช้งานปุ่มลอย"; setOnClickListener { beginCaptureFlow() } })
+        layout.addView(Button(this).apply {
+            text = "หยุดใช้งาน (ปิดปุ่มลอย)"
+            setOnClickListener {
+                stopService(Intent(this@MainActivity, CaptureOverlayService::class.java))
+                Toast.makeText(this@MainActivity, "ปิด GameLingo แล้ว", Toast.LENGTH_SHORT).show()
+            }
+        })
         layout.addView(TextView(this).apply {
-            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม"
+            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม\n6. ปิดใช้งาน: กด หยุด ในแถบแจ้งเตือน หรือกดปุ่ม หยุดใช้งาน ด้านบน"
             textSize = 14f
         })
         showLastCrash(layout, pad)

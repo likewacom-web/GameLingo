@@ -3,12 +3,14 @@ package com.likewa.gamelingo
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -71,6 +73,7 @@ class CaptureOverlayService : Service() {
         else WindowManager.LayoutParams.TYPE_PHONE
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
         source = intent?.getStringExtra("source") ?: "en"
         target = intent?.getStringExtra("target") ?: "th"
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
@@ -94,16 +97,19 @@ class CaptureOverlayService : Service() {
         return START_NOT_STICKY
     }
 
+    // The notification has a stop button, and tapping it opens the app, so GameLingo can always be turned off
     private fun buildNotification(): Notification {
         val channelId = "gamelingo_capture"
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(channelId, "GameLingo screen capture", NotificationManager.IMPORTANCE_LOW))
-        return if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, channelId)
-            .setContentTitle("GameLingo กำลังทำงาน").setContentText("แตะปุ่มลอยเพื่อแปลหน้าจอ").setSmallIcon(android.R.drawable.ic_menu_search).build()
-        else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this).setContentTitle("GameLingo กำลังทำงาน").setContentText("แตะปุ่มลอยเพื่อแปลหน้าจอ").setSmallIcon(android.R.drawable.ic_menu_search).build()
-        }
+        nm.createNotificationChannel(NotificationChannel(channelId, "GameLingo screen capture", NotificationManager.IMPORTANCE_LOW))
+        val stop = PendingIntent.getService(this, 0, Intent(this, CaptureOverlayService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        return Notification.Builder(this, channelId)
+            .setContentTitle("GameLingo กำลังทำงาน").setContentText("แตะปุ่มลอยเพื่อแปล กด หยุด เพื่อปิด")
+            .setSmallIcon(android.R.drawable.ic_menu_search).setContentIntent(open).setOngoing(true)
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "หยุด", stop).build())
+            .build()
     }
 
     // Full physical screen size, including status and navigation bars, in the current orientation
@@ -211,13 +217,28 @@ class CaptureOverlayService : Service() {
         processing = true
         val resized = matchCaptureToScreen()
         if (resized) translationLayer?.let { it.removeAllViews(); windowManager.updateViewLayout(it, fullScreenParams()) }
-        // Hide our own labels for a moment so the capture sees the game's original text, not the translation
+        // Hide our own labels so the capture sees the game's original text, then wait for a frame
+        // drawn after they were hidden; reading an older frame would re-translate our own labels.
         translationLayer?.alpha = 0f
-        handler.postDelayed({
-            val bitmap = grabFrame()
+        val hiddenAt = System.nanoTime()
+        handler.postDelayed({ waitForCleanFrame(hiddenAt, 0) }, if (resized) 500L else 60L)
+    }
+
+    private fun waitForCleanFrame(hiddenAt: Long, attempt: Int) {
+        val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
+        // Allow two display refreshes after hiding for the change to reach the captured frames. With no
+        // labels on screen any frame is clean, and after ~0.6 s take what we have in case the device's
+        // frame timestamps use a different clock.
+        val clean = translationLayer?.childCount == 0 || attempt >= 12
+        if (image != null && (clean || image.timestamp > hiddenAt + 34_000_000L)) {
+            val bitmap = toBitmap(image)
             translationLayer?.alpha = 1f
-            if (bitmap == null) cycleDone() else if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
-        }, if (resized) 500L else 120L)
+            if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
+            return
+        }
+        image?.close()
+        if (attempt < 12) handler.postDelayed({ waitForCleanFrame(hiddenAt, attempt + 1) }, 50L)
+        else { translationLayer?.alpha = 1f; cycleDone() }
     }
 
     private fun cycleDone() {
@@ -225,8 +246,7 @@ class CaptureOverlayService : Service() {
         if (liveMode) handler.postDelayed({ if (!processing) runCycle() }, 800L)
     }
 
-    private fun grabFrame(): Bitmap? {
-        val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null } ?: return null
+    private fun toBitmap(image: android.media.Image): Bitmap {
         val plane = image.planes[0]; val buffer = plane.buffer
         val pixelStride = plane.pixelStride; val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
@@ -310,8 +330,8 @@ class CaptureOverlayService : Service() {
     }
 
     private fun translateBlocks(found: List<TextBlock>) {
-        // Skip our own floating button, which is part of the captured screen
-        val blocks = found.filter { it.text.isNotBlank() && it.text != "G" && it.text != "■" }
+        // Skip our own floating button and OCR noise (stray symbols, single characters)
+        val blocks = found.filter { block -> block.text != "G" && block.text != "■" && block.text.count { it.isLetter() } >= 2 }
         val activeTranslator = translator
         if (activeTranslator == null) { finish("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); cycleDone(); return }
         // Game text repeats a lot between frames; reuse earlier translations so live mode stays fast
@@ -370,4 +390,8 @@ class CaptureOverlayService : Service() {
         super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        const val ACTION_STOP = "com.likewa.gamelingo.STOP"
+    }
 }
