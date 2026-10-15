@@ -59,10 +59,19 @@ class CaptureOverlayService : Service() {
         @Suppress("DEPRECATION")
         val data = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra("projectionData", Intent::class.java) else intent?.getParcelableExtra("projectionData")
         if (data == null) { stopSelf(); return START_NOT_STICKY }
-        startForeground(77, buildNotification())
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projection = manager.getMediaProjection(resultCode, data)
-        startCapture(); createOverlay(); prepareTranslator()
+        try {
+            startForeground(77, buildNotification())
+            projection = manager.getMediaProjection(resultCode, data)
+            // Android 14+ refuses to capture until a callback is registered
+            projection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() { stopSelf() }
+            }, handler)
+            startCapture(); createOverlay(); prepareTranslator()
+        } catch (e: Exception) {
+            Toast.makeText(this, "เริ่มจับภาพหน้าจอไม่สำเร็จ: ${e.message}", Toast.LENGTH_LONG).show()
+            stopSelf()
+        }
         return START_NOT_STICKY
     }
 
