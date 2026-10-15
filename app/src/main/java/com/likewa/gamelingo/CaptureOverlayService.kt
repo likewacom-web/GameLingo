@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -16,12 +17,17 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.DisplayMetrics
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.googlecode.tesseract.android.TessBaseAPI
+import com.google.android.gms.tasks.Task
+import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
@@ -37,9 +43,12 @@ import java.io.File
 import kotlin.concurrent.thread
 
 class CaptureOverlayService : Service() {
+    // A piece of on-screen text and where it was found, in screen pixels
+    private class TextBlock(val box: Rect, val text: String)
+
     private lateinit var windowManager: WindowManager
     private var overlay: Button? = null
-    private var resultView: TextView? = null
+    private var translationLayer: FrameLayout? = null
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -48,9 +57,11 @@ class CaptureOverlayService : Service() {
     private var target = "th"
     private var screenWidth = 0
     private var screenHeight = 0
-    private var density = 0
     private var processing = false
     private val handler = Handler(Looper.getMainLooper())
+    private val overlayType get() =
+        if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else WindowManager.LayoutParams.TYPE_PHONE
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         source = intent?.getStringExtra("source") ?: "en"
@@ -60,6 +71,7 @@ class CaptureOverlayService : Service() {
         val data = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra("projectionData", Intent::class.java) else intent?.getParcelableExtra("projectionData")
         if (data == null) { stopSelf(); return START_NOT_STICKY }
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         try {
             startForeground(77, buildNotification())
             projection = manager.getMediaProjection(resultCode, data)
@@ -87,31 +99,52 @@ class CaptureOverlayService : Service() {
         }
     }
 
+    // Full physical screen size, including status and navigation bars, in the current orientation
+    private fun realScreenSize(): Pair<Int, Int> =
+        if (Build.VERSION.SDK_INT >= 30) windowManager.currentWindowMetrics.bounds.let { it.width() to it.height() }
+        else DisplayMetrics().also { windowManager.defaultDisplay.getRealMetrics(it) }.let { it.widthPixels to it.heightPixels }
+
     private fun startCapture() {
-        val metrics = resources.displayMetrics
-        screenWidth = metrics.widthPixels; screenHeight = metrics.heightPixels; density = metrics.densityDpi
-        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = projection?.createVirtualDisplay("GameLingoCapture", screenWidth, screenHeight, density,
+        val (width, height) = realScreenSize()
+        screenWidth = width; screenHeight = height
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        virtualDisplay = projection?.createVirtualDisplay("GameLingoCapture", width, height, resources.displayMetrics.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, handler)
     }
 
+    // Games often rotate after capture starts; resize the capture instead of creating a second
+    // virtual display, which Android 14+ does not allow for one projection. Returns true if resized.
+    private fun matchCaptureToScreen(): Boolean {
+        val (width, height) = realScreenSize()
+        if (width == screenWidth && height == screenHeight) return false
+        val old = imageReader
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        virtualDisplay?.resize(width, height, resources.displayMetrics.densityDpi)
+        virtualDisplay?.surface = imageReader?.surface
+        old?.close()
+        screenWidth = width; screenHeight = height
+        return true
+    }
+
     private fun createOverlay() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
-        overlay = Button(this).apply { text = "G"; textSize = 18f; setOnClickListener { translateLatestFrame() } }
-        val params = WindowManager.LayoutParams((56 * resources.displayMetrics.density).toInt(), (56 * resources.displayMetrics.density).toInt(),
-            type, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
+        // Translations are drawn on a full-screen layer that ignores touches, so the game stays playable
+        translationLayer = FrameLayout(this)
+        windowManager.addView(translationLayer, fullScreenParams())
+        overlay = Button(this).apply { text = "G"; textSize = 18f; setOnClickListener { onTranslateTapped() } }
+        val size = (56 * resources.displayMetrics.density).toInt()
+        val params = WindowManager.LayoutParams(size, size, overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
             .apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL; x = 12; y = 0 }
         windowManager.addView(overlay, params)
-        resultView = TextView(this).apply {
-            text = "GameLingo พร้อมแปล"; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xDD211A2D.toInt()); setPadding(24, 18, 24, 18)
-            setOnClickListener { try { windowManager.removeView(this) } catch (_: Exception) {}; resultView = null }
-        }
-        val resultParams = WindowManager.LayoutParams((screenWidth * 0.88f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
-            .apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = 100 }
-        handler.post { try { resultView?.let { windowManager.addView(it, resultParams) } } catch (_: Exception) {} }
+    }
+
+    private fun fullScreenParams() = WindowManager.LayoutParams(screenWidth, screenHeight, overlayType,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+        PixelFormat.TRANSLUCENT).apply {
+        gravity = Gravity.TOP or Gravity.START; x = 0; y = 0
+        if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        if (Build.VERSION.SDK_INT >= 30) setFitInsetsTypes(0)
     }
 
     private fun prepareTranslator() {
@@ -121,12 +154,22 @@ class CaptureOverlayService : Service() {
             ?.addOnSuccessListener { Toast.makeText(this, "โมเดลภาษาเตรียมพร้อมแล้ว", Toast.LENGTH_SHORT).show() }
     }
 
-    private fun translateLatestFrame() {
+    // First tap translates everything on screen; the next tap clears the translations.
+    private fun onTranslateTapped() {
         if (processing) return
-        val reader = imageReader ?: return
-        val image = try { reader.acquireLatestImage() } catch (_: Exception) { null }
-        if (image == null) { Toast.makeText(this, "ยังไม่มีภาพหน้าจอ ลองอีกครั้ง", Toast.LENGTH_SHORT).show(); return }
+        val layer = translationLayer ?: return
+        if (layer.childCount > 0) { layer.removeAllViews(); return }
         processing = true
+        overlay?.text = "…"
+        val resized = matchCaptureToScreen()
+        if (resized) translationLayer?.let { windowManager.updateViewLayout(it, fullScreenParams()) }
+        // Give the capture a moment to deliver a frame of the current screen
+        handler.postDelayed({ captureAndTranslate() }, if (resized) 500L else 150L)
+    }
+
+    private fun captureAndTranslate() {
+        val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
+        if (image == null) { finish("ยังไม่มีภาพหน้าจอ ลองอีกครั้ง"); return }
         val plane = image.planes[0]; val buffer = plane.buffer
         val pixelStride = plane.pixelStride; val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
@@ -139,27 +182,42 @@ class CaptureOverlayService : Service() {
     private fun readWithMlKit(bitmap: Bitmap) {
         val recognizer = createRecognizer()
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { result -> translateText(result.text.trim()) }
+            .addOnSuccessListener { result ->
+                translateBlocks(result.textBlocks.mapNotNull { block ->
+                    block.boundingBox?.let { TextBlock(it, block.text.replace('\n', ' ').trim()) }
+                })
+            }
             .addOnFailureListener { finish("อ่านตัวหนังสือไม่สำเร็จ") }
             .addOnCompleteListener { bitmap.recycle(); recognizer.close() }
     }
 
-    // ML Kit has no Thai recognizer, so Thai goes through Tesseract on a background thread.
+    // ML Kit has no Thai recognizer, so Thai goes through Tesseract, line by line, on a background thread.
     private fun readThaiText(bitmap: Bitmap) {
-        handler.post { resultView?.text = "กำลังอ่านตัวหนังสือไทย..." }
         thread {
-            val text = try {
+            val blocks = try {
                 val tess = TessBaseAPI()
                 try {
-                    if (tess.init(tessDataPath(), "tha")) { tess.setImage(bitmap); tess.getUTF8Text() } else null
+                    if (!tess.init(tessDataPath(), "tha")) null else {
+                        tess.setImage(bitmap)
+                        tess.getUTF8Text()
+                        val lines = mutableListOf<TextBlock>()
+                        val level = 2 // TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE
+                        tess.getResultIterator()?.let { iterator ->
+                            iterator.begin()
+                            do {
+                                val text = iterator.getUTF8Text(level) ?: continue
+                                // Tesseract puts spaces between Thai words; Thai is written without them.
+                                val joined = text.replace(Regex("(?<=[\\u0E00-\\u0E7F]) +(?=[\\u0E00-\\u0E7F])"), "").trim()
+                                if (joined.isNotEmpty()) lines += TextBlock(iterator.getBoundingRect(level), joined)
+                            } while (iterator.next(level))
+                            iterator.delete()
+                        }
+                        lines
+                    }
                 } finally { tess.recycle() }
             } catch (_: Exception) { null }
             bitmap.recycle()
-            handler.post {
-                if (text == null) finish("อ่านตัวหนังสือไทยไม่สำเร็จ")
-                // Tesseract puts spaces between Thai words; Thai is written without them.
-                else translateText(text.replace(Regex("(?<=[\\u0E00-\\u0E7F]) +(?=[\\u0E00-\\u0E7F])"), "").trim())
-            }
+            handler.post { if (blocks == null) finish("อ่านตัวหนังสือไทยไม่สำเร็จ") else translateBlocks(blocks) }
         }
     }
 
@@ -173,16 +231,41 @@ class CaptureOverlayService : Service() {
         return filesDir.absolutePath
     }
 
-    private fun translateText(raw: String) {
-        if (raw.isBlank()) { finish("ไม่พบข้อความ ลองใหม่อีกครั้ง"); return }
+    private fun translateBlocks(found: List<TextBlock>) {
+        // Skip our own floating button, which is part of the captured screen
+        val blocks = found.filter { it.text.isNotBlank() && it.text != "G" }
+        if (blocks.isEmpty()) { finish("ไม่พบข้อความ ลองใหม่อีกครั้ง"); return }
         val activeTranslator = translator
         if (activeTranslator == null) { finish("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); return }
-        activeTranslator.translate(raw)
-            .addOnSuccessListener { translated -> finish(translated) }
-            .addOnFailureListener { finish("แปลไม่สำเร็จ ตรวจสอบภาษาและโมเดล") }
+        val tasks: List<Task<String>> = blocks.map { activeTranslator.translate(it.text) }
+        Tasks.whenAllComplete(tasks).addOnCompleteListener {
+            val translated = blocks.zip(tasks).filter { (_, task) -> task.isSuccessful }
+            if (translated.isEmpty()) { finish("แปลไม่สำเร็จ ตรวจสอบภาษาและโมเดล"); return@addOnCompleteListener }
+            translated.forEach { (block, task) -> addLabel(block.box, task.result) }
+            finish(null)
+        }
     }
 
-    private fun finish(message: String) { showResult(message); processing = false }
+    // Covers the original text with its translation, shrinking the font so it fits the same box
+    private fun addLabel(box: Rect, text: String) {
+        val layer = translationLayer ?: return
+        val pad = (2 * resources.displayMetrics.density).toInt()
+        val label = TextView(this).apply {
+            this.text = text; setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0xE6211A2D.toInt())
+            setPadding(pad, 0, pad, 0); gravity = Gravity.CENTER_VERTICAL
+            setAutoSizeTextTypeUniformWithConfiguration(6, 40, 1, TypedValue.COMPLEX_UNIT_SP)
+        }
+        val minHeight = (14 * resources.displayMetrics.density).toInt()
+        layer.addView(label, FrameLayout.LayoutParams(box.width() + pad * 2, maxOf(box.height(), minHeight)).apply {
+            leftMargin = box.left - pad; topMargin = box.top
+        })
+    }
+
+    private fun finish(message: String?) {
+        message?.let { Toast.makeText(this, it, Toast.LENGTH_SHORT).show() }
+        overlay?.text = "G"
+        processing = false
+    }
 
     // Each script needs its own ML Kit recognizer; Latin is the default.
     private fun createRecognizer(): TextRecognizer = TextRecognition.getClient(
@@ -194,13 +277,9 @@ class CaptureOverlayService : Service() {
         }
     )
 
-    private fun showResult(text: String) {
-        handler.post { resultView?.text = text; Toast.makeText(this, "แปลเสร็จแล้ว", Toast.LENGTH_SHORT).show() }
-    }
-
     override fun onDestroy() {
         try { overlay?.let { windowManager.removeView(it) } } catch (_: Exception) {}
-        try { resultView?.let { windowManager.removeView(it) } } catch (_: Exception) {}
+        try { translationLayer?.let { windowManager.removeView(it) } } catch (_: Exception) {}
         virtualDisplay?.release(); imageReader?.close(); projection?.stop(); translator?.close()
         super.onDestroy()
     }
