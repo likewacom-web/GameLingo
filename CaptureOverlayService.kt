@@ -50,82 +50,56 @@ class CaptureOverlayService : Service() {
         target = intent?.getStringExtra("target") ?: "th"
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
         @Suppress("DEPRECATION")
-        val data = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra("projectionData", Intent::class.java)
-                   else intent?.getParcelableExtra("projectionData")
+        val data = if (Build.VERSION.SDK_INT >= 33) intent?.getParcelableExtra("projectionData", Intent::class.java) else intent?.getParcelableExtra("projectionData")
         if (data == null) { stopSelf(); return START_NOT_STICKY }
         startForeground(77, buildNotification())
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = manager.getMediaProjection(resultCode, data)
-        startCapture()
-        createOverlay()
-        prepareTranslator()
+        startCapture(); createOverlay(); prepareTranslator()
         return START_NOT_STICKY
     }
 
     private fun buildNotification(): Notification {
         val channelId = "gamelingo_capture"
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(NotificationChannel(channelId, "GameLingo screen capture", NotificationManager.IMPORTANCE_LOW))
-        }
-        return if (Build.VERSION.SDK_INT >= 26) {
-            Notification.Builder(this, channelId).setContentTitle("GameLingo กำลังทำงาน")
-                .setContentText("แตะปุ่มลอยเพื่อแปลหน้าจอ").setSmallIcon(android.R.drawable.ic_menu_search).build()
-        } else {
+        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(channelId, "GameLingo screen capture", NotificationManager.IMPORTANCE_LOW))
+        return if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, channelId)
+            .setContentTitle("GameLingo กำลังทำงาน").setContentText("แตะปุ่มลอยเพื่อแปลหน้าจอ").setSmallIcon(android.R.drawable.ic_menu_search).build()
+        else {
             @Suppress("DEPRECATION")
-            Notification.Builder(this).setContentTitle("GameLingo กำลังทำงาน")
-                .setContentText("แตะปุ่มลอยเพื่อแปลหน้าจอ").setSmallIcon(android.R.drawable.ic_menu_search).build()
+            Notification.Builder(this).setContentTitle("GameLingo กำลังทำงาน").setContentText("แตะปุ่มลอยเพื่อแปลหน้าจอ").setSmallIcon(android.R.drawable.ic_menu_search).build()
         }
     }
 
     private fun startCapture() {
         val metrics = resources.displayMetrics
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
-        density = metrics.densityDpi
+        screenWidth = metrics.widthPixels; screenHeight = metrics.heightPixels; density = metrics.densityDpi
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = projection?.createVirtualDisplay(
-            "GameLingoCapture", screenWidth, screenHeight, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface, null, handler
-        )
+        virtualDisplay = projection?.createVirtualDisplay("GameLingoCapture", screenWidth, screenHeight, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, handler)
     }
 
     private fun createOverlay() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                   else WindowManager.LayoutParams.TYPE_PHONE
-        overlay = Button(this).apply {
-            text = "G"
-            textSize = 18f
-            setOnClickListener { translateLatestFrame() }
-        }
-        val params = WindowManager.LayoutParams(
-            (56 * resources.displayMetrics.density).toInt(),
-            (56 * resources.displayMetrics.density).toInt(),
-            type, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL; x = 12; y = 0 }
+        val type = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+        overlay = Button(this).apply { text = "G"; textSize = 18f; setOnClickListener { translateLatestFrame() } }
+        val params = WindowManager.LayoutParams((56 * resources.displayMetrics.density).toInt(), (56 * resources.displayMetrics.density).toInt(),
+            type, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
+            .apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL; x = 12; y = 0 }
         windowManager.addView(overlay, params)
         resultView = TextView(this).apply {
-            text = "GameLingo พร้อมแปล"
-            textSize = 16f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(0xDD211A2D.toInt())
-            setPadding(24, 18, 24, 18)
-            setOnClickListener { windowManager.removeView(this); resultView = null }
+            text = "GameLingo พร้อมแปล"; textSize = 16f; setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xDD211A2D.toInt()); setPadding(24, 18, 24, 18)
+            setOnClickListener { try { windowManager.removeView(this) } catch (_: Exception) {}; resultView = null }
         }
-        val resultParams = WindowManager.LayoutParams(
-            (screenWidth * 0.88f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = 100 }
-        handler.post { try { windowManager.addView(resultView, resultParams) } catch (_: Exception) {} }
+        val resultParams = WindowManager.LayoutParams((screenWidth * 0.88f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
+            .apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = 100 }
+        handler.post { try { resultView?.let { windowManager.addView(it, resultParams) } } catch (_: Exception) {} }
     }
 
     private fun prepareTranslator() {
-        val options = TranslatorOptions.Builder().setSourceLanguage(source).setTargetLanguage(target).build()
-        translator = Translation.getClient(options)
+        translator = Translation.getClient(TranslatorOptions.Builder().setSourceLanguage(source).setTargetLanguage(target).build())
         translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
             ?.addOnFailureListener { Toast.makeText(this, "ดาวน์โหลดโมเดลภาษาไม่สำเร็จ ต้องใช้อินเทอร์เน็ตก่อน", Toast.LENGTH_LONG).show() }
             ?.addOnSuccessListener { Toast.makeText(this, "โมเดลภาษาเตรียมพร้อมแล้ว", Toast.LENGTH_SHORT).show() }
@@ -135,68 +109,41 @@ class CaptureOverlayService : Service() {
         if (processing) return
         val reader = imageReader ?: return
         val image = try { reader.acquireLatestImage() } catch (_: Exception) { null }
-        if (image == null) {
-            Toast.makeText(this, "ยังไม่มีภาพหน้าจอ ลองแตะอีกครั้ง", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (image == null) { Toast.makeText(this, "ยังไม่มีภาพหน้าจอ ลองอีกครั้ง", Toast.LENGTH_SHORT).show(); return }
         processing = true
-        val plane = image.planes[0]
-        val buffer = plane.buffer
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
+        val plane = image.planes[0]; val buffer = plane.buffer
+        val pixelStride = plane.pixelStride; val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
-        val paddedBitmap = Bitmap.createBitmap(
-            screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888
-        )
-        paddedBitmap.copyPixelsFromBuffer(buffer)
-        image.close()
-        val bitmap = Bitmap.createBitmap(paddedBitmap, 0, 0, screenWidth, screenHeight)
-        paddedBitmap.recycle()
+        val padded = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888)
+        padded.copyPixelsFromBuffer(buffer); image.close()
+        val bitmap = Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight); padded.recycle()
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        recognizer.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { visionText ->
-                val raw = visionText.text.trim()
-                if (raw.isBlank()) {
-                    showResult("ไม่พบข้อความ ลองเล็งหน้าจอที่มีตัวหนังสือชัด ๆ")
-                    processing = false
-                    bitmap.recycle()
-                    recognizer.close()
-                } else {
-                    val currentTranslator = translator
-                    if (currentTranslator == null) {
-                        showResult("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่")
-                        processing = false
-                    } else {
-                        currentTranslator.translate(raw)
-                            .addOnSuccessListener { translated -> showResult(translated); processing = false; bitmap.recycle(); recognizer.close() }
-                            .addOnFailureListener { showResult("แปลไม่สำเร็จ ตรวจสอบภาษาและการดาวน์โหลดโมเดล"); processing = false; bitmap.recycle(); recognizer.close() }
-                    }
-                }
+        recognizer.process(InputImage.fromBitmap(bitmap, 0)).addOnSuccessListener { result ->
+            val raw = result.text.trim()
+            if (raw.isBlank()) {
+                showResult("ไม่พบข้อความ ลองใหม่อีกครั้ง"); processing = false; bitmap.recycle(); recognizer.close()
+            } else {
+                val activeTranslator = translator
+                if (activeTranslator == null) {
+                    showResult("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); processing = false; bitmap.recycle(); recognizer.close()
+                } else activeTranslator.translate(raw)
+                    .addOnSuccessListener { translated -> showResult(translated); processing = false; bitmap.recycle(); recognizer.close() }
+                    .addOnFailureListener { showResult("แปลไม่สำเร็จ ตรวจสอบภาษาและโมเดล"); processing = false; bitmap.recycle(); recognizer.close() }
             }
-            .addOnFailureListener {
-                showResult("อ่านตัวหนังสือไม่สำเร็จ ลองใหม่อีกครั้ง")
-                processing = false
-                bitmap.recycle()
-                recognizer.close()
-            }
+        }.addOnFailureListener {
+            showResult("อ่านตัวหนังสือไม่สำเร็จ"); processing = false; bitmap.recycle(); recognizer.close()
+        }
     }
 
     private fun showResult(text: String) {
-        handler.post {
-            resultView?.text = text
-            Toast.makeText(this, "แปลเสร็จแล้ว", Toast.LENGTH_SHORT).show()
-        }
+        handler.post { resultView?.text = text; Toast.makeText(this, "แปลเสร็จแล้ว", Toast.LENGTH_SHORT).show() }
     }
 
     override fun onDestroy() {
         try { overlay?.let { windowManager.removeView(it) } } catch (_: Exception) {}
         try { resultView?.let { windowManager.removeView(it) } } catch (_: Exception) {}
-        virtualDisplay?.release()
-        imageReader?.close()
-        projection?.stop()
-        translator?.close()
+        virtualDisplay?.release(); imageReader?.close(); projection?.stop(); translator?.close()
         super.onDestroy()
     }
-
     override fun onBind(intent: Intent?): IBinder? = null
 }
