@@ -20,6 +20,9 @@ import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -132,10 +135,44 @@ class CaptureOverlayService : Service() {
         windowManager.addView(translationLayer, fullScreenParams())
         overlay = Button(this).apply { text = "G"; textSize = 18f; setOnClickListener { onTranslateTapped() } }
         val size = (56 * resources.displayMetrics.density).toInt()
+        val prefs = getSharedPreferences("overlay", MODE_PRIVATE)
         val params = WindowManager.LayoutParams(size, size, overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
-            .apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL; x = 12; y = 0 }
+            .apply {
+                gravity = Gravity.TOP or Gravity.START
+                // Start at the right edge, vertically centred, or where the user last left it
+                x = prefs.getInt("buttonX", screenWidth - size - 12).coerceIn(0, maxOf(0, screenWidth - size))
+                y = prefs.getInt("buttonY", (screenHeight - size) / 2).coerceIn(0, maxOf(0, screenHeight - size))
+            }
+        overlay?.setOnTouchListener(dragListener(params, prefs))
         windowManager.addView(overlay, params)
+    }
+
+    // Lets the G button be dragged anywhere; a touch that doesn't move counts as a tap.
+    private fun dragListener(params: WindowManager.LayoutParams, prefs: android.content.SharedPreferences): View.OnTouchListener {
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        var startX = 0; var startY = 0; var touchX = 0f; var touchY = 0f; var dragging = false
+        return View.OnTouchListener { view, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = params.x; startY = params.y; touchX = event.rawX; touchY = event.rawY; dragging = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - touchX; val dy = event.rawY - touchY
+                    if (!dragging && dx * dx + dy * dy > slop * slop) dragging = true
+                    if (dragging) {
+                        params.x = (startX + dx.toInt()).coerceIn(0, maxOf(0, screenWidth - view.width))
+                        params.y = (startY + dy.toInt()).coerceIn(0, maxOf(0, screenHeight - view.height))
+                        windowManager.updateViewLayout(view, params)
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragging) prefs.edit().putInt("buttonX", params.x).putInt("buttonY", params.y).apply()
+                    else view.performClick()
+                }
+            }
+            true
+        }
     }
 
     private fun fullScreenParams() = WindowManager.LayoutParams(screenWidth, screenHeight, overlayType,
