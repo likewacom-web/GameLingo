@@ -32,6 +32,13 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
+      # Thai OCR model for Tesseract; kept out of git and bundled into the APK at build time
+      - name: Download Thai Tesseract model
+        run: |
+          mkdir -p app/src/main/assets/tessdata
+          curl -fsSL -o app/src/main/assets/tessdata/tha.traineddata \
+            https://github.com/tesseract-ocr/tessdata_fast/raw/main/tha.traineddata
+
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:

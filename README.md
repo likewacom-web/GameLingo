@@ -11,5 +11,6 @@ GitHub Actions -> Build GameLingo APK -> Run workflow. Download `GameLingo-debug
 ## Limitations
 - Early prototype; not validated on a physical device.
 - The initial translation model download requires internet. Downloaded supported models can be used offline.
-- OCR picks the ML Kit recognizer from the source language: Japanese, Chinese, and Korean use their own recognizers; everything else uses the Latin recognizer. Scripts ML Kit cannot read (such as Thai and Cyrillic) are not recognized yet.
+- OCR picks the ML Kit recognizer from the source language: Japanese, Chinese, and Korean use their own recognizers; Thai uses Tesseract (the `tha` model is downloaded into `app/src/main/assets/tessdata/` by the build workflow); everything else uses the Latin recognizer. Cyrillic is not recognized yet.
+- To build locally, download [tha.traineddata](https://github.com/tesseract-ocr/tessdata_fast/raw/main/tha.traineddata) into `app/src/main/assets/tessdata/` first.
 - Online translation fallback is not implemented yet.

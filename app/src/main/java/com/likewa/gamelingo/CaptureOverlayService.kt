@@ -21,6 +21,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import com.googlecode.tesseract.android.TessBaseAPI
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
@@ -32,6 +33,8 @@ import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.io.File
+import kotlin.concurrent.thread
 
 class CaptureOverlayService : Service() {
     private lateinit var windowManager: WindowManager
@@ -121,23 +124,56 @@ class CaptureOverlayService : Service() {
         val padded = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888)
         padded.copyPixelsFromBuffer(buffer); image.close()
         val bitmap = Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight); padded.recycle()
+        if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
+    }
+
+    private fun readWithMlKit(bitmap: Bitmap) {
         val recognizer = createRecognizer()
-        recognizer.process(InputImage.fromBitmap(bitmap, 0)).addOnSuccessListener { result ->
-            val raw = result.text.trim()
-            if (raw.isBlank()) {
-                showResult("ไม่พบข้อความ ลองใหม่อีกครั้ง"); processing = false; bitmap.recycle(); recognizer.close()
-            } else {
-                val activeTranslator = translator
-                if (activeTranslator == null) {
-                    showResult("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); processing = false; bitmap.recycle(); recognizer.close()
-                } else activeTranslator.translate(raw)
-                    .addOnSuccessListener { translated -> showResult(translated); processing = false; bitmap.recycle(); recognizer.close() }
-                    .addOnFailureListener { showResult("แปลไม่สำเร็จ ตรวจสอบภาษาและโมเดล"); processing = false; bitmap.recycle(); recognizer.close() }
+        recognizer.process(InputImage.fromBitmap(bitmap, 0))
+            .addOnSuccessListener { result -> translateText(result.text.trim()) }
+            .addOnFailureListener { finish("อ่านตัวหนังสือไม่สำเร็จ") }
+            .addOnCompleteListener { bitmap.recycle(); recognizer.close() }
+    }
+
+    // ML Kit has no Thai recognizer, so Thai goes through Tesseract on a background thread.
+    private fun readThaiText(bitmap: Bitmap) {
+        handler.post { resultView?.text = "กำลังอ่านตัวหนังสือไทย..." }
+        thread {
+            val text = try {
+                val tess = TessBaseAPI()
+                try {
+                    if (tess.init(tessDataPath(), "tha")) { tess.setImage(bitmap); tess.getUTF8Text() } else null
+                } finally { tess.recycle() }
+            } catch (_: Exception) { null }
+            bitmap.recycle()
+            handler.post {
+                if (text == null) finish("อ่านตัวหนังสือไทยไม่สำเร็จ")
+                // Tesseract puts spaces between Thai words; Thai is written without them.
+                else translateText(text.replace(Regex("(?<=[\\u0E00-\\u0E7F]) +(?=[\\u0E00-\\u0E7F])"), "").trim())
             }
-        }.addOnFailureListener {
-            showResult("อ่านตัวหนังสือไม่สำเร็จ"); processing = false; bitmap.recycle(); recognizer.close()
         }
     }
+
+    // Tesseract reads models from <path>/tessdata, so copy the bundled model out of assets once.
+    private fun tessDataPath(): String {
+        val model = File(filesDir, "tessdata/tha.traineddata")
+        if (!model.exists()) {
+            model.parentFile?.mkdirs()
+            assets.open("tessdata/tha.traineddata").use { input -> model.outputStream().use { input.copyTo(it) } }
+        }
+        return filesDir.absolutePath
+    }
+
+    private fun translateText(raw: String) {
+        if (raw.isBlank()) { finish("ไม่พบข้อความ ลองใหม่อีกครั้ง"); return }
+        val activeTranslator = translator
+        if (activeTranslator == null) { finish("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); return }
+        activeTranslator.translate(raw)
+            .addOnSuccessListener { translated -> finish(translated) }
+            .addOnFailureListener { finish("แปลไม่สำเร็จ ตรวจสอบภาษาและโมเดล") }
+    }
+
+    private fun finish(message: String) { showResult(message); processing = false }
 
     // Each script needs its own ML Kit recognizer; Latin is the default.
     private fun createRecognizer(): TextRecognizer = TextRecognition.getClient(
