@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
@@ -28,6 +29,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.graphics.ColorUtils
 import com.googlecode.tesseract.android.TessBaseAPI
 import com.google.android.gms.tasks.Task
 import com.google.android.gms.tasks.Tasks
@@ -47,7 +49,7 @@ import kotlin.concurrent.thread
 
 class CaptureOverlayService : Service() {
     // A piece of on-screen text and where it was found, in screen pixels
-    private class TextBlock(val box: Rect, val text: String)
+    private class TextBlock(val box: Rect, val text: String, val background: Int)
 
     private lateinit var windowManager: WindowManager
     private var overlay: Button? = null
@@ -61,6 +63,8 @@ class CaptureOverlayService : Service() {
     private var screenWidth = 0
     private var screenHeight = 0
     private var processing = false
+    private var liveMode = false
+    private val translationCache = HashMap<String, String>()
     private val handler = Handler(Looper.getMainLooper())
     private val overlayType get() =
         if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -191,40 +195,58 @@ class CaptureOverlayService : Service() {
             ?.addOnSuccessListener { Toast.makeText(this, "โมเดลภาษาเตรียมพร้อมแล้ว", Toast.LENGTH_SHORT).show() }
     }
 
-    // First tap translates everything on screen; the next tap clears the translations.
+    // Tapping G turns live translation on or off. While on, the screen is re-read about once a second,
+    // so the game's text stays replaced with the translation as you play.
     private fun onTranslateTapped() {
-        if (processing) return
-        val layer = translationLayer ?: return
-        if (layer.childCount > 0) { layer.removeAllViews(); return }
-        processing = true
-        overlay?.text = "…"
-        val resized = matchCaptureToScreen()
-        if (resized) translationLayer?.let { windowManager.updateViewLayout(it, fullScreenParams()) }
-        // Give the capture a moment to deliver a frame of the current screen
-        handler.postDelayed({ captureAndTranslate() }, if (resized) 500L else 150L)
+        liveMode = !liveMode
+        overlay?.text = if (liveMode) "■" else "G"
+        if (liveMode) {
+            Toast.makeText(this, "เปิดแปลสด แตะ ■ เพื่อปิด", Toast.LENGTH_SHORT).show()
+            if (!processing) runCycle()
+        } else translationLayer?.removeAllViews()
     }
 
-    private fun captureAndTranslate() {
-        val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
-        if (image == null) { finish("ยังไม่มีภาพหน้าจอ ลองอีกครั้ง"); return }
+    private fun runCycle() {
+        if (!liveMode) return
+        processing = true
+        val resized = matchCaptureToScreen()
+        if (resized) translationLayer?.let { it.removeAllViews(); windowManager.updateViewLayout(it, fullScreenParams()) }
+        // Hide our own labels for a moment so the capture sees the game's original text, not the translation
+        translationLayer?.alpha = 0f
+        handler.postDelayed({
+            val bitmap = grabFrame()
+            translationLayer?.alpha = 1f
+            if (bitmap == null) cycleDone() else if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
+        }, if (resized) 500L else 120L)
+    }
+
+    private fun cycleDone() {
+        processing = false
+        if (liveMode) handler.postDelayed({ if (!processing) runCycle() }, 800L)
+    }
+
+    private fun grabFrame(): Bitmap? {
+        val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null } ?: return null
         val plane = image.planes[0]; val buffer = plane.buffer
         val pixelStride = plane.pixelStride; val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
         val padded = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888)
         padded.copyPixelsFromBuffer(buffer); image.close()
-        val bitmap = Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight); padded.recycle()
-        if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
+        return Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight).also { padded.recycle() }
     }
 
+    // Uses each line rather than each block, so separate buttons, labels and lines of dialogue
+    // keep their own place instead of being merged into one big box.
     private fun readWithMlKit(bitmap: Bitmap) {
         val recognizer = createRecognizer()
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
-                translateBlocks(result.textBlocks.mapNotNull { block ->
-                    block.boundingBox?.let { TextBlock(it, block.text.replace('\n', ' ').trim()) }
-                })
+                val lines = result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
+                    line.boundingBox?.let { TextBlock(it, line.text.trim(), backgroundColor(bitmap, it)) }
+                }
+                translateBlocks(lines)
             }
-            .addOnFailureListener { finish("อ่านตัวหนังสือไม่สำเร็จ") }
+            .addOnFailureListener { cycleDone() }
             .addOnCompleteListener { bitmap.recycle(); recognizer.close() }
     }
 
@@ -245,7 +267,8 @@ class CaptureOverlayService : Service() {
                                 val text = iterator.getUTF8Text(level) ?: continue
                                 // Tesseract puts spaces between Thai words; Thai is written without them.
                                 val joined = text.replace(Regex("(?<=[\\u0E00-\\u0E7F]) +(?=[\\u0E00-\\u0E7F])"), "").trim()
-                                if (joined.isNotEmpty()) lines += TextBlock(iterator.getBoundingRect(level), joined)
+                                val box = iterator.getBoundingRect(level)
+                                if (joined.isNotEmpty()) lines += TextBlock(box, joined, backgroundColor(bitmap, box))
                             } while (iterator.next(level))
                             iterator.delete()
                         }
@@ -254,8 +277,26 @@ class CaptureOverlayService : Service() {
                 } finally { tess.recycle() }
             } catch (_: Exception) { null }
             bitmap.recycle()
-            handler.post { if (blocks == null) finish("อ่านตัวหนังสือไทยไม่สำเร็จ") else translateBlocks(blocks) }
+            handler.post {
+                if (blocks != null) translateBlocks(blocks)
+                else { liveMode = false; overlay?.text = "G"; finish("อ่านตัวหนังสือไทยไม่สำเร็จ"); cycleDone() }
+            }
         }
+    }
+
+    // Average colour just outside the text's box, so the translation can be painted over the original
+    // in the game's own background colour instead of a generic dark box.
+    private fun backgroundColor(bitmap: Bitmap, box: Rect): Int {
+        var r = 0L; var g = 0L; var b = 0L; var n = 0
+        fun sample(x: Int, y: Int) {
+            if (x < 0 || y < 0 || x >= bitmap.width || y >= bitmap.height) return
+            val c = bitmap.getPixel(x, y); r += Color.red(c); g += Color.green(c); b += Color.blue(c); n++
+        }
+        val left = box.left - 2; val right = box.right + 1; val top = box.top - 2; val bottom = box.bottom + 1
+        val stepX = maxOf(1, (right - left) / 12); val stepY = maxOf(1, (bottom - top) / 4)
+        var x = left; while (x <= right) { sample(x, top); sample(x, bottom); x += stepX }
+        var y = top; while (y <= bottom) { sample(left, y); sample(right, y); y += stepY }
+        return if (n == 0) Color.BLACK else Color.rgb((r / n).toInt(), (g / n).toInt(), (b / n).toInt())
     }
 
     // Tesseract reads models from <path>/tessdata, so copy the bundled model out of assets once.
@@ -270,38 +311,45 @@ class CaptureOverlayService : Service() {
 
     private fun translateBlocks(found: List<TextBlock>) {
         // Skip our own floating button, which is part of the captured screen
-        val blocks = found.filter { it.text.isNotBlank() && it.text != "G" }
-        if (blocks.isEmpty()) { finish("ไม่พบข้อความ ลองใหม่อีกครั้ง"); return }
+        val blocks = found.filter { it.text.isNotBlank() && it.text != "G" && it.text != "■" }
         val activeTranslator = translator
-        if (activeTranslator == null) { finish("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); return }
-        val tasks: List<Task<String>> = blocks.map { activeTranslator.translate(it.text) }
+        if (activeTranslator == null) { finish("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); cycleDone(); return }
+        // Game text repeats a lot between frames; reuse earlier translations so live mode stays fast
+        val tasks: List<Task<String>> = blocks.map { block ->
+            translationCache[block.text]?.let { Tasks.forResult(it) } ?: activeTranslator.translate(block.text)
+                .addOnSuccessListener { if (translationCache.size > 500) translationCache.clear(); translationCache[block.text] = it }
+        }
         Tasks.whenAllComplete(tasks).addOnCompleteListener {
-            val translated = blocks.zip(tasks).filter { (_, task) -> task.isSuccessful }
-            if (translated.isEmpty()) { finish("แปลไม่สำเร็จ ตรวจสอบภาษาและโมเดล"); return@addOnCompleteListener }
-            translated.forEach { (block, task) -> addLabel(block.box, task.result) }
-            finish(null)
+            translationLayer?.removeAllViews()
+            if (liveMode) blocks.zip(tasks).filter { (_, task) -> task.isSuccessful }.forEach { (block, task) -> addLabel(block, task.result) }
+            cycleDone()
         }
     }
 
-    // Covers the original text with its translation, shrinking the font so it fits the same box
-    private fun addLabel(box: Rect, text: String) {
+    // Paints the translation over the original text in the same spot and background colour, with a
+    // contrasting text colour. The font follows the original line's height (never below a readable
+    // minimum), and the label grows sideways if the translation is longer, rather than shrinking it.
+    private fun addLabel(block: TextBlock, text: String) {
         val layer = translationLayer ?: return
+        val box = block.box
         val pad = (2 * resources.displayMetrics.density).toInt()
+        val minTextPx = 12 * resources.displayMetrics.scaledDensity
+        val light = ColorUtils.calculateLuminance(block.background) > 0.5
         val label = TextView(this).apply {
-            this.text = text; setTextColor(0xFFFFFFFF.toInt()); setBackgroundColor(0xE6211A2D.toInt())
-            setPadding(pad, 0, pad, 0); gravity = Gravity.CENTER_VERTICAL
-            setAutoSizeTextTypeUniformWithConfiguration(6, 40, 1, TypedValue.COMPLEX_UNIT_SP)
+            this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
+            setBackgroundColor(block.background); setPadding(pad, 0, pad, 0)
+            gravity = Gravity.CENTER_VERTICAL; maxLines = 1; includeFontPadding = false
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, maxOf(minTextPx, box.height() * 0.8f))
+            minWidth = box.width() + pad * 2
+            minHeight = box.height() + pad
         }
-        val minHeight = (14 * resources.displayMetrics.density).toInt()
-        layer.addView(label, FrameLayout.LayoutParams(box.width() + pad * 2, maxOf(box.height(), minHeight)).apply {
-            leftMargin = box.left - pad; topMargin = box.top
+        layer.addView(label, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = box.left - pad; topMargin = box.top - pad / 2
         })
     }
 
     private fun finish(message: String?) {
         message?.let { Toast.makeText(this, it, Toast.LENGTH_SHORT).show() }
-        overlay?.text = "G"
-        processing = false
     }
 
     // Each script needs its own ML Kit recognizer; Latin is the default.
@@ -315,6 +363,7 @@ class CaptureOverlayService : Service() {
     )
 
     override fun onDestroy() {
+        liveMode = false; handler.removeCallbacksAndMessages(null)
         try { overlay?.let { windowManager.removeView(it) } } catch (_: Exception) {}
         try { translationLayer?.let { windowManager.removeView(it) } } catch (_: Exception) {}
         virtualDisplay?.release(); imageReader?.close(); projection?.stop(); translator?.close()

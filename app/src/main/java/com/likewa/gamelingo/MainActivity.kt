@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(targetSpinner)
         layout.addView(Button(this).apply { text = "เริ่มใช้งานปุ่มลอย"; setOnClickListener { beginCaptureFlow() } })
         layout.addView(TextView(this).apply {
-            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อแปล"
+            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม"
             textSize = 14f
         })
         showLastCrash(layout, pad)
