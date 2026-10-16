@@ -11,6 +11,9 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.1"
+        // Only 64-bit ARM, which every current Android phone uses. The OCR and translation libraries ship
+        // native code for four CPU types, and including them all made the APK about 140 MB.
+        ndk { abiFilters += "arm64-v8a" }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
