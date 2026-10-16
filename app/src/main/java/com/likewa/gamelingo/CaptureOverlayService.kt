@@ -51,7 +51,7 @@ import kotlin.concurrent.thread
 
 class CaptureOverlayService : Service() {
     // A piece of on-screen text and where it was found, in screen pixels
-    private class TextBlock(val box: Rect, val text: String, val background: Int)
+    private class TextBlock(val box: Rect, val text: String, val background: Int, val paragraph: Boolean = false, val lineHeight: Int = box.height())
 
     private lateinit var windowManager: WindowManager
     private var overlay: Button? = null
@@ -255,16 +255,36 @@ class CaptureOverlayService : Service() {
         return Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight).also { padded.recycle() }
     }
 
+    // A block of several left-aligned lines in the same font size is a paragraph (e.g. a card's
+    // description). Translating it as one piece gives the translator the whole sentence instead of
+    // fragments; other blocks are translated line by line so separate UI items stay apart.
+    private fun isParagraph(block: com.google.mlkit.vision.text.Text.TextBlock): Boolean {
+        val boxes = block.lines.mapNotNull { it.boundingBox }
+        if (boxes.size < 2 || boxes.size != block.lines.size) return false
+        val heights = boxes.map { it.height() }.sorted()
+        val median = heights[heights.size / 2].toFloat()
+        if (median <= 0f) return false
+        val sameSize = heights.all { kotlin.math.abs(it - median) <= median * 0.3f }
+        val aligned = boxes.all { kotlin.math.abs(it.left - boxes[0].left) <= median * 1.5f }
+        return sameSize && aligned
+    }
+
     // Uses each line rather than each block, so separate buttons, labels and lines of dialogue
     // keep their own place instead of being merged into one big box.
     private fun readWithMlKit(bitmap: Bitmap) {
         val recognizer = createRecognizer()
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
-                val lines = result.textBlocks.flatMap { it.lines }.mapNotNull { line ->
-                    line.boundingBox?.let { TextBlock(it, line.text.trim(), backgroundColor(bitmap, it)) }
+                val found = result.textBlocks.flatMap { block ->
+                    val box = block.boundingBox
+                    if (box != null && isParagraph(block)) {
+                        val lineHeight = box.height() / block.lines.size
+                        listOf(TextBlock(box, block.lines.joinToString(" ") { it.text.trim() }, backgroundColor(bitmap, box), paragraph = true, lineHeight = lineHeight))
+                    } else block.lines.mapNotNull { line ->
+                        line.boundingBox?.let { TextBlock(it, line.text.trim(), backgroundColor(bitmap, it)) }
+                    }
                 }
-                translateBlocks(lines)
+                translateBlocks(found)
             }
             .addOnFailureListener { cycleDone() }
             .addOnCompleteListener { bitmap.recycle(); recognizer.close() }
@@ -334,14 +354,33 @@ class CaptureOverlayService : Service() {
         val blocks = found.filter { block -> block.text != "G" && block.text != "■" && block.text.count { it.isLetter() } >= 2 }
         val activeTranslator = translator
         if (activeTranslator == null) { finish("กำลังเตรียมโมเดลแปลภาษา กรุณารอสักครู่"); cycleDone(); return }
-        // Game text repeats a lot between frames; reuse earlier translations so live mode stays fast
-        val tasks: List<Task<String>> = blocks.map { block ->
-            translationCache[block.text]?.let { Tasks.forResult(it) } ?: activeTranslator.translate(block.text)
-                .addOnSuccessListener { if (translationCache.size > 500) translationCache.clear(); translationCache[block.text] = it }
+        // Fixed translations first (the user's corrections, then built-in game terms). A single word with
+        // no fixed translation (usually a name like "Wildcard") is left as it is, since the translator
+        // gets those wrong without context. Everything else goes to the translator, cached because game
+        // text repeats a lot between frames.
+        val spaced = source !in setOf("ja", "zh", "ko", "th")
+        val fresh = mutableListOf<Glossary.Entry>()
+        val tasks: List<Task<String?>> = blocks.map { block ->
+            val fixed = Glossary.lookup(this, block.text, source, target)
+            when {
+                fixed != null -> Tasks.forResult<String?>(fixed)
+                spaced && !block.text.trim().contains(' ') -> Tasks.forResult<String?>(null)
+                else -> translationCache[block.text]?.let { Tasks.forResult<String?>(it) }
+                    ?: activeTranslator.translate(block.text).continueWith { task ->
+                        val result = task.result
+                        if (translationCache.size > 500) translationCache.clear()
+                        translationCache[block.text] = result
+                        fresh += Glossary.Entry(source, target, block.text, result)
+                        result
+                    }
+            }
         }
         Tasks.whenAllComplete(tasks).addOnCompleteListener {
             translationLayer?.removeAllViews()
-            if (liveMode) blocks.zip(tasks).filter { (_, task) -> task.isSuccessful }.forEach { (block, task) -> addLabel(block, task.result) }
+            if (liveMode) blocks.zip(tasks).forEach { (block, task) ->
+                if (task.isSuccessful) task.result?.let { addLabel(block, it) }
+            }
+            Glossary.remember(this, fresh)
             cycleDone()
         }
     }
@@ -355,14 +394,16 @@ class CaptureOverlayService : Service() {
         val box = block.box
         val pad = (2 * resources.displayMetrics.density).toInt()
         val light = ColorUtils.calculateLuminance(block.background) > 0.5
-        val width = minOf((box.width() * 1.3f).toInt(), screenWidth - box.left) + pad * 2
+        // A paragraph keeps its box and wraps; a single line may widen a little
+        val width = (if (block.paragraph) box.width() else minOf((box.width() * 1.3f).toInt(), screenWidth - box.left)) + pad * 2
         val height = box.height() + pad
-        val maxPx = maxOf(8, (box.height() * 0.95f).toInt())
+        val maxPx = maxOf(8, (block.lineHeight * 0.95f).toInt())
         val minPx = minOf(maxPx, (7 * resources.displayMetrics.density).toInt())
         val label = TextView(this).apply {
             this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
             setBackgroundColor(block.background); setPadding(pad, 0, pad, 0)
-            gravity = Gravity.CENTER_VERTICAL; maxLines = 1; includeFontPadding = false
+            gravity = Gravity.CENTER_VERTICAL; includeFontPadding = false
+            if (!block.paragraph) maxLines = 1
             setAutoSizeTextTypeUniformWithConfiguration(minPx, maxPx, 1, TypedValue.COMPLEX_UNIT_PX)
         }
         layer.addView(label, FrameLayout.LayoutParams(width, height).apply {

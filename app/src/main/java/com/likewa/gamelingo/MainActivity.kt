@@ -13,11 +13,13 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
@@ -53,6 +55,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(TextView(this).apply { text = "แปลเป็น" })
         layout.addView(targetSpinner)
         layout.addView(Button(this).apply { text = "เริ่มใช้งานปุ่มลอย"; setOnClickListener { beginCaptureFlow() } })
+        layout.addView(Button(this).apply { text = "แก้คำแปล"; setOnClickListener { showCorrections() } })
         layout.addView(Button(this).apply {
             text = "หยุดใช้งาน (ปิดปุ่มลอย)"
             setOnClickListener {
@@ -61,7 +64,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         layout.addView(TextView(this).apply {
-            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม\n6. ปิดใช้งาน: กด หยุด ในแถบแจ้งเตือน หรือกดปุ่ม หยุดใช้งาน ด้านบน"
+            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม\n6. ปิดใช้งาน: กด หยุด ในแถบแจ้งเตือน หรือกดปุ่ม หยุดใช้งาน ด้านบน\n7. คำไหนแปลผิด: กด แก้คำแปล แล้วเลือกคำนั้น ครั้งต่อไปจะแปลตามที่แก้"
             textSize = 14f
         })
         showLastCrash(layout, pad)
@@ -117,6 +120,40 @@ class MainActivity : AppCompatActivity() {
         }
         val time = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(info.timestamp))
         return "Exit: $reason, status ${info.status}, $time\n${info.description ?: ""}"
+    }
+
+    // Lists the user's own corrections and recently shown translations; picking one lets the user
+    // type the right translation, which the overlay then always uses for that text.
+    private fun showCorrections() {
+        val saved = Glossary.userEntries(this)
+        val savedKeys = saved.map { "${it.source}>${it.target}|${it.text}" }.toSet()
+        val recent = Glossary.recent(this).filter { "${it.source}>${it.target}|${Glossary.normalize(it.text)}" !in savedKeys }
+        val entries = saved + recent
+        val labels = listOf("+ เพิ่มคำแปลเอง") +
+            saved.map { "✓ ${it.text} → ${it.translation}" } + recent.map { "${it.text} → ${it.translation}" }
+        AlertDialog.Builder(this).setTitle("เลือกคำที่จะแก้")
+            .setItems(labels.toTypedArray()) { _, which ->
+                if (which == 0) editCorrection(null) else editCorrection(entries[which - 1])
+            }
+            .setNegativeButton("ปิด", null).show()
+    }
+
+    private fun editCorrection(entry: Glossary.Entry?) {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val original = EditText(this).apply { hint = "ข้อความในเกม"; setText(entry?.text ?: ""); isEnabled = entry == null }
+        val translation = EditText(this).apply { hint = "คำแปลที่ถูกต้อง (เว้นว่าง = ลบ)"; setText(entry?.translation ?: "") }
+        form.addView(original); form.addView(translation)
+        val source = entry?.source ?: languages[sourceSpinner.selectedItemPosition].second
+        val target = entry?.target ?: targets[targetSpinner.selectedItemPosition].second
+        AlertDialog.Builder(this).setTitle(if (entry == null) "เพิ่มคำแปลเอง" else "แก้คำแปล").setView(form)
+            .setPositiveButton("บันทึก") { _, _ ->
+                val text = original.text.toString()
+                if (text.isBlank()) return@setPositiveButton
+                Glossary.setUserTranslation(this, source, target, text, translation.text.toString())
+                Toast.makeText(this, "บันทึกแล้ว", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("ยกเลิก", null).show()
     }
 
     private fun beginCaptureFlow() {
