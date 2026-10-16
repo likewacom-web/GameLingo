@@ -16,6 +16,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(targetSpinner)
         layout.addView(Button(this).apply { text = "เริ่มใช้งานปุ่มลอย"; setOnClickListener { beginCaptureFlow() } })
         layout.addView(Button(this).apply { text = "แก้คำแปล"; setOnClickListener { showCorrections() } })
+        addTextSizeSetting(layout)
         layout.addView(Button(this).apply {
             text = "นำเข้าพจนานุกรมเกม (.json)"
             setOnClickListener { pickGlossary.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }
@@ -167,6 +169,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var packsLabel: TextView? = null
+
+    // Size of the translated text on the game screen, 40-120%; the overlay reads it on every refresh
+    private fun addTextSizeSetting(layout: LinearLayout) {
+        val prefs = getSharedPreferences("overlay", MODE_PRIVATE)
+        val label = TextView(this).apply { textSize = 14f }
+        fun show(value: Int) { label.text = "ขนาดตัวอักษรคำแปล: $value%" }
+        val current = prefs.getInt("textScale", 100)
+        show(current)
+        layout.addView(label)
+        layout.addView(SeekBar(this).apply {
+            max = 80; progress = current - 40
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                    show(progress + 40); prefs.edit().putInt("textScale", progress + 40).apply()
+                }
+                override fun onStartTrackingTouch(bar: SeekBar) {}
+                override fun onStopTrackingTouch(bar: SeekBar) {}
+            })
+        })
+    }
 
     // Imports a glossary file (same format as the bundled 9 Kings one) so a game's own terms are used
     private val pickGlossary = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->

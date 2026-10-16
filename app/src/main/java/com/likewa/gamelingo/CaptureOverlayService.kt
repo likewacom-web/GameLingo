@@ -389,20 +389,18 @@ class CaptureOverlayService : Service() {
         }
     }
 
-    // Paints the translation over the original text in the same box and background colour, with a
-    // contrasting text colour. The font starts at the original line's height and shrinks until the
-    // translation fits, so labels never spill over neighbouring text. Longer translations may use up to
-    // 30% more width when there is room on screen.
+    // Paints the translation over the original text, inside the original box only, in the box's
+    // background colour with a contrasting text colour. Thai marks above and below the letters need
+    // extra height, so the font is capped well below the line height, then scaled by the user's text size
+    // setting and shrunk further until the translation fits, so labels don't spill onto each other.
     private fun addLabel(block: TextBlock, text: String) {
         val layer = translationLayer ?: return
         val box = block.box
-        val pad = (2 * resources.displayMetrics.density).toInt()
+        val pad = (1 * resources.displayMetrics.density).toInt()
         val light = ColorUtils.calculateLuminance(block.background) > 0.5
-        // A paragraph keeps its box and wraps; a single line may widen a little
-        val width = (if (block.paragraph) box.width() else minOf((box.width() * 1.3f).toInt(), screenWidth - box.left)) + pad * 2
-        val height = box.height() + pad
-        val maxPx = maxOf(8, (block.lineHeight * 0.95f).toInt())
-        val minPx = minOf(maxPx, (7 * resources.displayMetrics.density).toInt())
+        val scale = getSharedPreferences("overlay", MODE_PRIVATE).getInt("textScale", 100) / 100f
+        val maxPx = maxOf(6, (block.lineHeight * 0.7f * scale).toInt())
+        val minPx = minOf(maxPx, (5 * resources.displayMetrics.density).toInt())
         val label = TextView(this).apply {
             this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
             setBackgroundColor(block.background); setPadding(pad, 0, pad, 0)
@@ -410,8 +408,8 @@ class CaptureOverlayService : Service() {
             if (!block.paragraph) maxLines = 1
             setAutoSizeTextTypeUniformWithConfiguration(minPx, maxPx, 1, TypedValue.COMPLEX_UNIT_PX)
         }
-        layer.addView(label, FrameLayout.LayoutParams(width, height).apply {
-            leftMargin = box.left - pad; topMargin = box.top - pad / 2
+        layer.addView(label, FrameLayout.LayoutParams(box.width(), box.height()).apply {
+            leftMargin = box.left; topMargin = box.top
         })
     }
 
