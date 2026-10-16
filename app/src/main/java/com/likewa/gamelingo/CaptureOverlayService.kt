@@ -365,14 +365,18 @@ class CaptureOverlayService : Service() {
             when {
                 fixed != null -> Tasks.forResult<String?>(fixed)
                 spaced && !block.text.trim().contains(' ') -> Tasks.forResult<String?>(null)
-                else -> translationCache[block.text]?.let { Tasks.forResult<String?>(it) }
-                    ?: activeTranslator.translate(block.text).continueWith { task ->
+                else -> translationCache[block.text]?.let { Tasks.forResult<String?>(it) } ?: run {
+                    // Put the game's own term translations into the sentence first
+                    val prepared = Glossary.substituteTerms(this, block.text, source, target)
+                    if (spaced && prepared.none { it in 'A'..'Z' || it in 'a'..'z' }) Tasks.forResult<String?>(prepared)
+                    else activeTranslator.translate(prepared).continueWith { task ->
                         val result = task.result
                         if (translationCache.size > 500) translationCache.clear()
                         translationCache[block.text] = result
                         fresh += Glossary.Entry(source, target, block.text, result)
                         result
                     }
+                }
             }
         }
         Tasks.whenAllComplete(tasks).addOnCompleteListener {

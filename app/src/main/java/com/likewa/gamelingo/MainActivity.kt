@@ -19,6 +19,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
@@ -57,6 +58,15 @@ class MainActivity : AppCompatActivity() {
         layout.addView(Button(this).apply { text = "เริ่มใช้งานปุ่มลอย"; setOnClickListener { beginCaptureFlow() } })
         layout.addView(Button(this).apply { text = "แก้คำแปล"; setOnClickListener { showCorrections() } })
         layout.addView(Button(this).apply {
+            text = "นำเข้าพจนานุกรมเกม (.json)"
+            setOnClickListener { pickGlossary.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }
+        })
+        layout.addView(TextView(this).apply {
+            text = "พจนานุกรมที่ใช้อยู่: " + Glossary.packs(this@MainActivity).joinToString { "${it.name} (${it.entries.size} คำ)" }
+                .ifEmpty { "ไม่มี" }
+            textSize = 12f
+        }.also { packsLabel = it })
+        layout.addView(Button(this).apply {
             text = "หยุดใช้งาน (ปิดปุ่มลอย)"
             setOnClickListener {
                 stopService(Intent(this@MainActivity, CaptureOverlayService::class.java))
@@ -64,7 +74,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         layout.addView(TextView(this).apply {
-            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม\n6. ปิดใช้งาน: กด หยุด ในแถบแจ้งเตือน หรือกดปุ่ม หยุดใช้งาน ด้านบน\n7. คำไหนแปลผิด: กด แก้คำแปล แล้วเลือกคำนั้น ครั้งต่อไปจะแปลตามที่แก้"
+            text = "\nวิธีใช้\n1. เลือกภาษา\n2. กดเริ่มและอนุญาตแสดงทับแอปอื่น\n3. อนุญาตจับภาพหน้าจอ\n4. กลับเข้าเกมแล้วแตะปุ่ม G เพื่อเปิดแปลสด (แตะ ■ เพื่อปิด)\n5. กดค้างแล้วลากเพื่อย้ายปุ่ม\n6. ปิดใช้งาน: กด หยุด ในแถบแจ้งเตือน หรือกดปุ่ม หยุดใช้งาน ด้านบน\n7. คำไหนแปลผิด: กด แก้คำแปล แล้วเลือกคำนั้น ครั้งต่อไปจะแปลตามที่แก้\n8. มีไฟล์ศัพท์ของเกม: กด นำเข้าพจนานุกรมเกม"
             textSize = 14f
         })
         showLastCrash(layout, pad)
@@ -154,6 +164,21 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "บันทึกแล้ว", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("ยกเลิก", null).show()
+    }
+
+    private var packsLabel: TextView? = null
+
+    // Imports a glossary file (same format as the bundled 9 Kings one) so a game's own terms are used
+    private val pickGlossary = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            val json = contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() }
+            val pack = Glossary.importPack(this, json)
+            packsLabel?.text = "พจนานุกรมที่ใช้อยู่: " + Glossary.packs(this).joinToString { "${it.name} (${it.entries.size} คำ)" }
+            Toast.makeText(this, "นำเข้า ${pack.name} แล้ว ${pack.entries.size} คำ", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "ไฟล์นี้ใช้ไม่ได้: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun beginCaptureFlow() {

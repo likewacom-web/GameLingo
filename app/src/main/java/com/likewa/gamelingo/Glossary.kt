@@ -5,9 +5,16 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 // Fixed translations that take priority over the on-device translator, which translates word by word
-// without knowing it's a game (e.g. "auto" -> "รถยนต์"). Two layers: the user's own corrections, then a
-// built-in list of common English game terms for English -> Thai.
+// without knowing it's a game (e.g. "auto" -> "รถยนต์"). Three layers, in priority order: the user's own
+// corrections, glossary packs (JSON files bundled in assets/glossaries or imported by the user, e.g. one
+// per game), then a built-in list of common English game terms for English -> Thai.
 object Glossary {
+    // A glossary pack file: {"name", "sourceLanguage", "targetLanguage", "entries": {"text": "translation"}}
+    class Pack(val name: String, val source: String, val target: String, val entries: Map<String, String>)
+
+    private var packs: List<Pack>? = null
+    private val termPatterns = HashMap<String, Regex?>()
+
     private const val USER = "glossary"
     private const val RECENT = "recent_translations"
     private const val RECENT_LIMIT = 60
@@ -42,11 +49,59 @@ object Glossary {
 
     fun normalize(text: String) = text.trim().trimEnd(':', '.', '!').replace(Regex("\\s+"), " ").lowercase()
 
-    // User correction first, then the built-in list (English -> Thai only)
+    // Whole-text match: user correction, then glossary packs, then the built-in list (English -> Thai only)
     fun lookup(context: Context, text: String, source: String, target: String): String? {
         val key = normalize(text)
         context.getSharedPreferences(USER, Context.MODE_PRIVATE).getString("$source>$target|$key", null)?.let { return it }
+        packs(context).forEach { pack -> if (pack.source == source && pack.target == target) pack.entries[key]?.let { return it } }
         return if (source == "en" && target == "th") builtInEnTh[key] else null
+    }
+
+    // Swaps glossary-pack terms found inside a longer sentence for their translations before the sentence
+    // goes to the translator, which passes text already in the target script through unchanged. Longest
+    // terms win ("Adjacent plots" before "Plot"). The built-in list is left out: its short everyday words
+    // ("no", "free", "day") would wrongly replace parts of ordinary sentences.
+    fun substituteTerms(context: Context, text: String, source: String, target: String): String {
+        val terms = packs(context).filter { it.source == source && it.target == target }
+            .flatMap { it.entries.entries }.associate { it.key to it.value }
+        if (terms.isEmpty()) return text
+        val pattern = termPatterns.getOrPut("$source>$target") {
+            val alternatives = terms.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }
+            Regex("(?<![\\p{L}\\p{N}])(?:$alternatives)(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)
+        } ?: return text
+        return pattern.replace(text) { match -> terms[normalize(match.value)] ?: match.value }
+    }
+
+    fun packs(context: Context): List<Pack> = packs ?: loadPacks(context).also { packs = it }
+
+    private fun loadPacks(context: Context): List<Pack> {
+        val bundled = (context.assets.list("glossaries") ?: emptyArray()).mapNotNull { file ->
+            try { context.assets.open("glossaries/$file").bufferedReader().use { parsePack(it.readText()) } } catch (_: Exception) { null }
+        }
+        val imported = (importDir(context).listFiles() ?: emptyArray()).mapNotNull { file ->
+            try { parsePack(file.readText()) } catch (_: Exception) { null }
+        }
+        return imported + bundled
+    }
+
+    private fun parsePack(json: String): Pack {
+        val root = JSONObject(json)
+        val entries = root.getJSONObject("entries")
+        val map = HashMap<String, String>()
+        entries.keys().forEach { key -> entries.optString(key).takeIf { it.isNotBlank() }?.let { map[normalize(key)] = it } }
+        require(map.isNotEmpty()) { "no entries" }
+        return Pack(root.optString("name", "Glossary"), root.optString("sourceLanguage", "en"), root.optString("targetLanguage", "th"), map)
+    }
+
+    private fun importDir(context: Context) = java.io.File(context.filesDir, "glossaries").apply { mkdirs() }
+
+    // Saves a glossary pack chosen by the user; it then applies to every game session. Returns the pack.
+    fun importPack(context: Context, json: String): Pack {
+        val pack = parsePack(json)
+        val fileName = pack.name.replace(Regex("[^A-Za-z0-9ก-๙_-]+"), "_").take(60) + ".json"
+        java.io.File(importDir(context), fileName).writeText(json)
+        packs = null; termPatterns.clear()
+        return pack
     }
 
     fun setUserTranslation(context: Context, source: String, target: String, text: String, translation: String) {
