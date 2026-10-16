@@ -400,7 +400,8 @@ class CaptureOverlayService : Service() {
         val light = ColorUtils.calculateLuminance(block.background) > 0.5
         val scale = getSharedPreferences("overlay", MODE_PRIVATE).getInt("textScale", 100) / 100f
         val maxPx = maxOf(6, (block.lineHeight * 0.7f * scale).toInt())
-        val minPx = minOf(maxPx, (5 * resources.displayMetrics.density).toInt())
+        // Auto-size throws (crashing the app) unless the minimum is strictly below the maximum
+        val minPx = minOf(maxPx - 1, (5 * resources.displayMetrics.density).toInt()).coerceAtLeast(1)
         val label = TextView(this).apply {
             this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
             setBackgroundColor(block.background); setPadding(pad, 0, pad, 0)
