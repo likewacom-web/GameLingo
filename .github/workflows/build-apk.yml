@@ -6,7 +6,7 @@ on:
     branches: [main, master]
 
 permissions:
-  contents: read
+  contents: write  # to update the "latest" release with each build
 
 jobs:
   build:
@@ -53,3 +53,15 @@ jobs:
           name: GameLingo-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # A fixed download link that never expires (artifact links need a GitHub login and signed
+      # download URLs only last minutes): every build replaces the APK on the "latest" pre-release.
+      - name: Publish APK to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk GameLingo-debug.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest GameLingo-debug.apk --prerelease --target "${{ github.sha }}" \
+            --title "GameLingo (latest build)" \
+            --notes "Debug APK built from ${{ github.ref_name }} at ${{ github.sha }}. Install over the previous version."

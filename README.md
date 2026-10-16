@@ -6,7 +6,7 @@ Android native Kotlin prototype for screen text translation using a floating but
 Keep `settings.gradle.kts`, root `build.gradle.kts`, and `gradle.properties` at the root. The Android module belongs inside `app/`. Workflow belongs in `.github/workflows/build-apk.yml`.
 
 ## Build
-GitHub Actions -> Build GameLingo APK -> Run workflow. Download `GameLingo-debug-apk` artifact if the job succeeds.
+GitHub Actions -> Build GameLingo APK -> Run workflow. Each successful build is published to the `latest` pre-release: download it from https://github.com/likewacom-web/GameLingo/releases/download/latest/GameLingo-debug.apk (no login needed). The `GameLingo-debug-apk` workflow artifact is also kept.
 
 ## Limitations
 - Early prototype; not validated on a physical device.
