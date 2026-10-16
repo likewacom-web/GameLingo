@@ -66,6 +66,7 @@ class CaptureOverlayService : Service() {
     private var screenHeight = 0
     private var processing = false
     private var liveMode = false
+    private var baseline: IntArray? = null
     private val translationCache = HashMap<String, String>()
     private val handler = Handler(Looper.getMainLooper())
     private val overlayType get() =
@@ -209,7 +210,7 @@ class CaptureOverlayService : Service() {
         if (liveMode) {
             Toast.makeText(this, "เปิดแปลสด แตะ ■ เพื่อปิด", Toast.LENGTH_SHORT).show()
             if (!processing) runCycle()
-        } else translationLayer?.removeAllViews()
+        } else { translationLayer?.removeAllViews(); baseline = null }
     }
 
     private fun runCycle() {
@@ -217,6 +218,20 @@ class CaptureOverlayService : Service() {
         processing = true
         val resized = matchCaptureToScreen()
         if (resized) translationLayer?.let { it.removeAllViews(); windowManager.updateViewLayout(it, fullScreenParams()) }
+        // Re-read only when the game screen has changed: hiding the labels for each capture is what makes
+        // them flicker, so while the screen stays the same the translations are left untouched.
+        if (!resized && (translationLayer?.childCount ?: 0) > 0) {
+            val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
+            // No new frame at all means nothing on screen moved
+            if (image == null) { cycleDone(); return }
+            val current = screenSignature(toBitmap(image))
+            val base = baseline
+            if (base == null || !screenChanged(base, current)) {
+                if (base == null) baseline = current
+                cycleDone(); return
+            }
+        }
+        baseline = null
         // Hide our own labels so the capture sees the game's original text, then wait for a frame
         // drawn after they were hidden; reading an older frame would re-translate our own labels.
         translationLayer?.alpha = 0f
@@ -239,6 +254,38 @@ class CaptureOverlayService : Service() {
         image?.close()
         if (attempt < 12) handler.postDelayed({ waitForCleanFrame(hiddenAt, attempt + 1) }, 50L)
         else { translationLayer?.alpha = 1f; cycleDone() }
+    }
+
+    // A coarse 48x27 grid of brightness values for the screen, with cells under our own labels left
+    // out (-1), so the labels themselves never count as a change.
+    private fun screenSignature(bitmap: Bitmap): IntArray {
+        val cols = 48; val rows = 27
+        val small = Bitmap.createScaledBitmap(bitmap, cols, rows, true)
+        bitmap.recycle()
+        val labels = translationLayer?.let { layer ->
+            (0 until layer.childCount).map { i -> layer.getChildAt(i).let { Rect(it.x.toInt(), it.y.toInt(), (it.x + it.width).toInt(), (it.y + it.height).toInt()) } }
+        } ?: emptyList()
+        val cellW = screenWidth / cols.toFloat(); val cellH = screenHeight / rows.toFloat()
+        val result = IntArray(cols * rows) { i ->
+            val cx = i % cols; val cy = i / cols
+            val cell = Rect((cx * cellW).toInt(), (cy * cellH).toInt(), ((cx + 1) * cellW).toInt(), ((cy + 1) * cellH).toInt())
+            if (labels.any { Rect.intersects(it, cell) }) -1
+            else small.getPixel(cx, cy).let { (Color.red(it) * 3 + Color.green(it) * 6 + Color.blue(it)) / 10 }
+        }
+        small.recycle()
+        return result
+    }
+
+    // Changed when more than 4% of the comparable cells differ clearly; small animations (swaying trees,
+    // idle units) stay below that
+    private fun screenChanged(before: IntArray, after: IntArray): Boolean {
+        var compared = 0; var changed = 0
+        for (i in before.indices) {
+            if (before[i] < 0 || after[i] < 0) continue
+            compared++
+            if (kotlin.math.abs(before[i] - after[i]) > 24) changed++
+        }
+        return compared > 0 && changed > compared * 0.04f
     }
 
     private fun cycleDone() {
@@ -381,37 +428,51 @@ class CaptureOverlayService : Service() {
         }
         Tasks.whenAllComplete(tasks).addOnCompleteListener {
             translationLayer?.removeAllViews()
-            if (liveMode) blocks.zip(tasks).forEach { (block, task) ->
-                if (task.isSuccessful) task.result?.let { addLabel(block, it) }
+            val placed = mutableListOf<Rect>()
+            if (liveMode) blocks.zip(tasks).sortedBy { it.first.box.top }.forEach { (block, task) ->
+                if (task.isSuccessful) task.result?.let { addLabel(block, it, placed) }
             }
             Glossary.remember(this, fresh)
             cycleDone()
         }
     }
 
-    // Paints the translation over the original text, inside the original box only, in the box's
-    // background colour with a contrasting text colour. Thai marks above and below the letters need
-    // extra height, so the font is capped well below the line height, then scaled by the user's text size
-    // setting and shrunk further until the translation fits, so labels don't spill onto each other.
-    private fun addLabel(block: TextBlock, text: String) {
+    // Paints the translation over the original text in its background colour with a contrasting text
+    // colour. Text is kept readable: at least 11sp (times the user's size setting) even when the game's
+    // text is tiny, so a label may be wider or taller than the original. It covers the original with a
+    // small margin, and is pushed down below any label already placed so labels never overlap.
+    private fun addLabel(block: TextBlock, text: String, placed: MutableList<Rect>) {
         val layer = translationLayer ?: return
         val box = block.box
-        val pad = (1 * resources.displayMetrics.density).toInt()
+        val density = resources.displayMetrics.density
+        val pad = (2 * density).toInt()
         val light = ColorUtils.calculateLuminance(block.background) > 0.5
         val scale = getSharedPreferences("overlay", MODE_PRIVATE).getInt("textScale", 100) / 100f
-        val maxPx = maxOf(6, (block.lineHeight * 0.7f * scale).toInt())
-        // Auto-size throws (crashing the app) unless the minimum is strictly below the maximum
-        val minPx = minOf(maxPx - 1, (5 * resources.displayMetrics.density).toInt()).coerceAtLeast(1)
+        val textPx = maxOf(11 * resources.displayMetrics.scaledDensity, block.lineHeight * 0.85f) * scale
         val label = TextView(this).apply {
             this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
-            setBackgroundColor(block.background); setPadding(pad, 0, pad, 0)
-            gravity = Gravity.CENTER_VERTICAL; includeFontPadding = false
-            if (!block.paragraph) maxLines = 1
-            setAutoSizeTextTypeUniformWithConfiguration(minPx, maxPx, 1, TypedValue.COMPLEX_UNIT_PX)
+            setBackgroundColor(block.background); setPadding(pad * 2, pad, pad * 2, pad)
+            includeFontPadding = true
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx)
+            maxLines = if (block.paragraph) 12 else 2
         }
-        layer.addView(label, FrameLayout.LayoutParams(box.width(), box.height()).apply {
-            leftMargin = box.left; topMargin = box.top
-        })
+        val left = (box.left - pad).coerceAtLeast(0)
+        val available = screenWidth - left
+        // A paragraph keeps its width and wraps; a short line grows to fit its translation
+        val widthSpec = if (block.paragraph) View.MeasureSpec.makeMeasureSpec(minOf(box.width() + pad * 4, available), View.MeasureSpec.EXACTLY)
+            else View.MeasureSpec.makeMeasureSpec(available, View.MeasureSpec.AT_MOST)
+        label.measure(widthSpec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        val width = maxOf(label.measuredWidth, minOf(box.width() + pad * 4, available))
+        val height = maxOf(label.measuredHeight, box.height() + pad * 2)
+        var top = (box.top - pad).coerceAtLeast(0)
+        var rect = Rect(left, top, left + width, top + height)
+        while (true) {
+            val hit = placed.firstOrNull { Rect.intersects(it, rect) } ?: break
+            top = hit.bottom + 1
+            rect = Rect(left, top, left + width, top + height)
+        }
+        placed += rect
+        layer.addView(label, FrameLayout.LayoutParams(width, height).apply { leftMargin = left; topMargin = top })
     }
 
     private fun finish(message: String?) {

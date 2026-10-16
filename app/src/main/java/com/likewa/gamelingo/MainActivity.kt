@@ -170,7 +170,7 @@ class MainActivity : AppCompatActivity() {
 
     private var packsLabel: TextView? = null
 
-    // Size of the translated text on the game screen, 40-120%; the overlay reads it on every refresh
+    // Size of the translated text on the game screen, 60-200%; the overlay reads it on every refresh
     private fun addTextSizeSetting(layout: LinearLayout) {
         val prefs = getSharedPreferences("overlay", MODE_PRIVATE)
         val label = TextView(this).apply { textSize = 14f }
@@ -179,10 +179,10 @@ class MainActivity : AppCompatActivity() {
         show(current)
         layout.addView(label)
         layout.addView(SeekBar(this).apply {
-            max = 80; progress = current - 40
+            max = 140; progress = (current - 60).coerceIn(0, 140)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
-                    show(progress + 40); prefs.edit().putInt("textScale", progress + 40).apply()
+                    show(progress + 60); prefs.edit().putInt("textScale", progress + 60).apply()
                 }
                 override fun onStartTrackingTouch(bar: SeekBar) {}
                 override fun onStopTrackingTouch(bar: SeekBar) {}
