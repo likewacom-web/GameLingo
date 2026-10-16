@@ -447,7 +447,7 @@ class CaptureOverlayService : Service() {
         val density = resources.displayMetrics.density
         val pad = (2 * density).toInt()
         val light = ColorUtils.calculateLuminance(block.background) > 0.5
-        val scale = getSharedPreferences("overlay", MODE_PRIVATE).getInt("textScale", 100) / 100f
+        val scale = getSharedPreferences("overlay", MODE_PRIVATE).getInt("textScale", 100).coerceIn(60, 200) / 100f
         val textPx = maxOf(11 * resources.displayMetrics.scaledDensity, block.lineHeight * 0.85f) * scale
         val label = TextView(this).apply {
             this.text = text; setTextColor(if (light) Color.BLACK else Color.WHITE)
