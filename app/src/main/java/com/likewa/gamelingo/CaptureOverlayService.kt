@@ -333,23 +333,32 @@ class CaptureOverlayService : Service() {
 
     // Uses each line rather than each block, so separate buttons, labels and lines of dialogue
     // keep their own place instead of being merged into one big box.
+    // Pixel fonts are read much more reliably when enlarged first; nearest-neighbour scaling keeps the
+    // letter edges sharp. Up to 2x, capped so the longest side stays within 4096 px. Boxes found on the
+    // enlarged image are scaled back to screen coordinates.
     private fun readWithMlKit(bitmap: Bitmap) {
+        val factor = minOf(2f, 4096f / maxOf(bitmap.width, bitmap.height)).coerceAtLeast(1f)
+        val enlarged = if (factor > 1.05f) try {
+            Bitmap.createScaledBitmap(bitmap, (bitmap.width * factor).toInt(), (bitmap.height * factor).toInt(), false)
+        } catch (_: OutOfMemoryError) { null } else null
+        val scale = if (enlarged != null) factor else 1f
+        fun toScreen(r: Rect) = Rect((r.left / scale).toInt(), (r.top / scale).toInt(), (r.right / scale).toInt(), (r.bottom / scale).toInt())
         val recognizer = createRecognizer()
-        recognizer.process(InputImage.fromBitmap(bitmap, 0))
+        recognizer.process(InputImage.fromBitmap(enlarged ?: bitmap, 0))
             .addOnSuccessListener { result ->
                 val found = try { result.textBlocks.flatMap { block ->
-                    val box = block.boundingBox
+                    val box = block.boundingBox?.let { toScreen(it) }
                     if (box != null && isParagraph(block)) {
                         val lineHeight = box.height() / block.lines.size
                         listOf(TextBlock(box, block.lines.joinToString(" ") { it.text.trim() }, backgroundColor(bitmap, box), paragraph = true, lineHeight = lineHeight))
                     } else block.lines.mapNotNull { line ->
-                        line.boundingBox?.let { TextBlock(it, line.text.trim(), backgroundColor(bitmap, it)) }
+                        line.boundingBox?.let { toScreen(it) }?.let { TextBlock(it, line.text.trim(), backgroundColor(bitmap, it)) }
                     }
                 } } catch (_: Exception) { emptyList() }
                 translateBlocks(found)
             }
             .addOnFailureListener { cycleDone() }
-            .addOnCompleteListener { bitmap.recycle(); recognizer.close() }
+            .addOnCompleteListener { bitmap.recycle(); enlarged?.recycle(); recognizer.close() }
     }
 
     // ML Kit has no Thai recognizer, so Thai goes through Tesseract, line by line, on a background thread.

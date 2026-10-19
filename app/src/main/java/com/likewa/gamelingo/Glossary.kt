@@ -54,7 +54,58 @@ object Glossary {
         val key = normalize(text)
         context.getSharedPreferences(USER, Context.MODE_PRIVATE).getString("$source>$target|$key", null)?.let { return it }
         packs(context).forEach { pack -> if (pack.source == source && pack.target == target) pack.entries[key]?.let { return it } }
-        return if (source == "en" && target == "th") builtInEnTh[key] else null
+        if (source == "en" && target == "th") builtInEnTh[key]?.let { return it }
+        return fuzzyLookup(context, text, source, target)
+    }
+
+    private val fuzzyCache = HashMap<String, String?>()
+
+    // Letters and digits only, lower case, with the usual pixel-font OCR confusions undone
+    private fun compact(text: String) = text.lowercase().replace('0', 'o').replace('|', 'l').filter { it.isLetterOrDigit() }
+
+    // OCR on pixel fonts often gets a letter wrong or drops a space ("CHOOSE A KINC", "CHOOSEA BING",
+    // "BING OF NATURE"). With no exact match, take the closest fixed translation that is at most about one
+    // wrong letter in five away. Short texts are left out, where one letter changes the meaning.
+    private fun fuzzyLookup(context: Context, text: String, source: String, target: String): String? {
+        val wanted = compact(text)
+        if (wanted.length < 6) return null
+        val cacheKey = "$source>$target|$wanted"
+        if (fuzzyCache.containsKey(cacheKey)) return fuzzyCache[cacheKey]
+        val maxDistance = wanted.length / 5
+        val candidates = ArrayList<Pair<String, String>>()
+        context.getSharedPreferences(USER, Context.MODE_PRIVATE).all.forEach { (key, value) ->
+            if (key.startsWith("$source>$target|") && value is String) candidates += key.substringAfter('|') to value
+        }
+        packs(context).filter { it.source == source && it.target == target }.forEach { candidates += it.entries.toList() }
+        if (source == "en" && target == "th") candidates += builtInEnTh.toList()
+        var best: String? = null; var bestDistance = maxDistance + 1
+        for ((key, translation) in candidates) {
+            val candidate = compact(key)
+            if (kotlin.math.abs(candidate.length - wanted.length) >= bestDistance) continue
+            val distance = editDistance(wanted, candidate, bestDistance)
+            if (distance < bestDistance) { best = translation; bestDistance = distance }
+        }
+        if (fuzzyCache.size > 1000) fuzzyCache.clear()
+        fuzzyCache[cacheKey] = best
+        return best
+    }
+
+    // Levenshtein distance, giving up (returning limit) once every path is already at the limit
+    private fun editDistance(a: String, b: String, limit: Int): Int {
+        var previous = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            val current = IntArray(b.length + 1)
+            current[0] = i
+            var rowMin = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                current[j] = minOf(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+                rowMin = minOf(rowMin, current[j])
+            }
+            if (rowMin >= limit) return limit
+            previous = current
+        }
+        return previous[b.length]
     }
 
     // Swaps glossary-pack terms found inside a longer sentence for their translations before the sentence
@@ -100,7 +151,7 @@ object Glossary {
         val pack = parsePack(json)
         val fileName = pack.name.replace(Regex("[^A-Za-z0-9ก-๙_-]+"), "_").take(60) + ".json"
         java.io.File(importDir(context), fileName).writeText(json)
-        packs = null; termPatterns.clear()
+        packs = null; termPatterns.clear(); fuzzyCache.clear()
         return pack
     }
 
@@ -109,6 +160,7 @@ object Glossary {
         context.getSharedPreferences(USER, Context.MODE_PRIVATE).edit().apply {
             if (translation.isBlank()) remove(key) else putString(key, translation.trim())
         }.apply()
+        fuzzyCache.clear()
     }
 
     class Entry(val source: String, val target: String, val text: String, val translation: String)
