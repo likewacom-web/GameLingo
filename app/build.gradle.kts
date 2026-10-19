@@ -15,6 +15,17 @@ android {
         // native code for four CPU types, and including them all made the APK about 140 MB.
         ndk { abiFilters += "arm64-v8a" }
     }
+    // Sign every build with the same debug key. CI runners otherwise generate a new random debug key per
+    // build, and Android refuses to install an update signed with a different key ("package conflicts").
+    // This is a public debug-only key with the standard Android debug passwords, not a release key.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
