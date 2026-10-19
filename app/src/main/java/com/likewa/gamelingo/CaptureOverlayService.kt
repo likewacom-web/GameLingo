@@ -214,6 +214,10 @@ class CaptureOverlayService : Service() {
     }
 
     private fun runCycle() {
+        try { runCycleUnsafe() } catch (_: Exception) { translationLayer?.alpha = 1f; cycleDone() }
+    }
+
+    private fun runCycleUnsafe() {
         if (!liveMode) return
         processing = true
         val resized = matchCaptureToScreen()
@@ -224,7 +228,8 @@ class CaptureOverlayService : Service() {
             val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
             // No new frame at all means nothing on screen moved
             if (image == null) { cycleDone(); return }
-            val current = screenSignature(toBitmap(image))
+            val frame = toBitmap(image) ?: run { cycleDone(); return }
+            val current = screenSignature(frame)
             val base = baseline
             if (base == null || !screenChanged(base, current)) {
                 if (base == null) baseline = current
@@ -240,6 +245,10 @@ class CaptureOverlayService : Service() {
     }
 
     private fun waitForCleanFrame(hiddenAt: Long, attempt: Int) {
+        try { waitForCleanFrameUnsafe(hiddenAt, attempt) } catch (_: Exception) { translationLayer?.alpha = 1f; cycleDone() }
+    }
+
+    private fun waitForCleanFrameUnsafe(hiddenAt: Long, attempt: Int) {
         val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
         // Allow two display refreshes after hiding for the change to reach the captured frames. With no
         // labels on screen any frame is clean, and after ~0.6 s take what we have in case the device's
@@ -248,7 +257,7 @@ class CaptureOverlayService : Service() {
         if (image != null && (clean || image.timestamp > hiddenAt + 34_000_000L)) {
             val bitmap = toBitmap(image)
             translationLayer?.alpha = 1f
-            if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
+            if (bitmap == null) cycleDone() else if (source == "th") readThaiText(bitmap) else readWithMlKit(bitmap)
             return
         }
         image?.close()
@@ -293,14 +302,20 @@ class CaptureOverlayService : Service() {
         if (liveMode) handler.postDelayed({ if (!processing) runCycle() }, 800L)
     }
 
-    private fun toBitmap(image: android.media.Image): Bitmap {
-        val plane = image.planes[0]; val buffer = plane.buffer
-        val pixelStride = plane.pixelStride; val rowStride = plane.rowStride
-        val rowPadding = rowStride - pixelStride * screenWidth
-        val padded = Bitmap.createBitmap(screenWidth + rowPadding / pixelStride, screenHeight, Bitmap.Config.ARGB_8888)
-        padded.copyPixelsFromBuffer(buffer); image.close()
-        return Bitmap.createBitmap(padded, 0, 0, screenWidth, screenHeight).also { padded.recycle() }
-    }
+    // Copies a captured frame into a bitmap using the frame's own size. Right after the game rotates,
+    // frames of the old size can still arrive; those are skipped (null) rather than read with the new
+    // screen size, which overran the buffer and crashed the app. The image is always closed.
+    private fun toBitmap(image: android.media.Image): Bitmap? = try {
+        val width = image.width; val height = image.height
+        if (width != screenWidth || height != screenHeight) null else {
+            val plane = image.planes[0]
+            val pixelStride = plane.pixelStride
+            val rowWidth = plane.rowStride / pixelStride
+            val padded = Bitmap.createBitmap(rowWidth, height, Bitmap.Config.ARGB_8888)
+            padded.copyPixelsFromBuffer(plane.buffer)
+            Bitmap.createBitmap(padded, 0, 0, width, height).also { if (it !== padded) padded.recycle() }
+        }
+    } catch (_: Exception) { null } finally { image.close() }
 
     // A block of several left-aligned lines in the same font size is a paragraph (e.g. a card's
     // description). Translating it as one piece gives the translator the whole sentence instead of
@@ -322,7 +337,7 @@ class CaptureOverlayService : Service() {
         val recognizer = createRecognizer()
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
-                val found = result.textBlocks.flatMap { block ->
+                val found = try { result.textBlocks.flatMap { block ->
                     val box = block.boundingBox
                     if (box != null && isParagraph(block)) {
                         val lineHeight = box.height() / block.lines.size
@@ -330,7 +345,7 @@ class CaptureOverlayService : Service() {
                     } else block.lines.mapNotNull { line ->
                         line.boundingBox?.let { TextBlock(it, line.text.trim(), backgroundColor(bitmap, it)) }
                     }
-                }
+                } } catch (_: Exception) { emptyList() }
                 translateBlocks(found)
             }
             .addOnFailureListener { cycleDone() }
@@ -427,11 +442,13 @@ class CaptureOverlayService : Service() {
             }
         }
         Tasks.whenAllComplete(tasks).addOnCompleteListener {
-            translationLayer?.removeAllViews()
-            val placed = mutableListOf<Rect>()
-            if (liveMode) blocks.zip(tasks).sortedBy { it.first.box.top }.forEach { (block, task) ->
-                if (task.isSuccessful) task.result?.let { addLabel(block, it, placed) }
-            }
+            try {
+                translationLayer?.removeAllViews()
+                val placed = mutableListOf<Rect>()
+                if (liveMode) blocks.zip(tasks).sortedBy { it.first.box.top }.forEach { (block, task) ->
+                    if (task.isSuccessful) task.result?.let { addLabel(block, it, placed) }
+                }
+            } catch (_: Exception) {}
             Glossary.remember(this, fresh)
             cycleDone()
         }
